@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.6
+
+Harden automatic YouTube trailer matching based on Dry Run false positives.
+
+- Reject unsafe candidate titles such as live streams, full episodes, themes, covers, fan/concept trailers, reaction/review videos, ads and kids-song clips
+- Reject automatic matches when the detected year in the YouTube title conflicts with the Emby movie year
+- Require meaningful title-token overlap before `MATCH`, `WOULD_DOWNLOAD` or `WOULD_UPGRADE` is allowed
+- Make weak upgrade matches fall back to `UPGRADE_NO_MATCH` instead of replacing a low-resolution trailer with the wrong movie
+- Add regression tests for the false positives seen in the Filme Kids Dry Run log
+
 ## 0.3.5
 
 Persist processing logs in appdata like the upstream MTDP workflow.

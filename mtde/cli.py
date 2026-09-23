@@ -14,8 +14,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="mtde", description="Missing Trailer Downloader for Emby")
     parser.add_argument("--config", default=os.environ.get("MTDE_CONFIG", "/config/config.yml"))
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--scan", action="store_true", help="scan and download missing local trailers")
-    mode.add_argument("--dry-run", action="store_true", help="scan/search but do not download")
+    mode.add_argument("--scan", action="store_true", help="scan and download missing local trailers unless DRY_RUN is enabled")
+    mode.add_argument("--dry-run", action="store_true", help="scan/search but never download or refresh Emby")
     mode.add_argument("--test", action="store_true", help="test Emby connection")
     args = parser.parse_args()
 

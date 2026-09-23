@@ -6,8 +6,8 @@ import re
 from typing import Any
 
 
-
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".m4v", ".mov", ".avi", ".webm", ".ts", ".m2ts"}
+LEGACY_TRAILER_FOLDER_NAMES = {"trailer", "trailers"}
 
 
 @dataclass
@@ -146,10 +146,61 @@ class TrailerDownloader:
         raise FileNotFoundError(f"yt-dlp completed but no output file was found for {output_stem}")
 
 
-def find_local_trailers(movie_path: str | Path, trailer_folder: str) -> list[Path]:
-    movie_path = Path(movie_path)
-    movie_dir = movie_path if movie_path.is_dir() else movie_path.parent
-    trailer_dir = movie_dir / trailer_folder
-    if not trailer_dir.is_dir():
+def _movie_directory(movie_path: str | Path) -> Path:
+    path = Path(movie_path)
+    return path if path.is_dir() else path.parent
+
+
+def trailer_directories(movie_path: str | Path, trailer_folder: str) -> list[Path]:
+    """Return known trailer directories without failing on missing/inaccessible legacy folders."""
+    movie_dir = _movie_directory(movie_path)
+    if not movie_dir.is_dir():
         return []
-    return [p for p in trailer_dir.iterdir() if p.is_file() and p.suffix.casefold() in VIDEO_EXTENSIONS]
+
+    accepted = {trailer_folder.casefold(), *LEGACY_TRAILER_FOLDER_NAMES}
+    found: list[Path] = []
+    try:
+        for child in movie_dir.iterdir():
+            try:
+                if child.is_dir() and child.name.casefold() in accepted:
+                    found.append(child)
+            except OSError:
+                continue
+    except OSError:
+        return []
+
+    return sorted(found, key=lambda p: (p.name.casefold() != trailer_folder.casefold(), p.name.casefold(), p.name))
+
+
+def find_local_trailers(movie_path: str | Path, trailer_folder: str) -> list[Path]:
+    """Find local trailers in configured and legacy Trailer/Trailers folders, case-insensitively."""
+    files: list[Path] = []
+    seen: set[Path] = set()
+    for trailer_dir in trailer_directories(movie_path, trailer_folder):
+        try:
+            children = list(trailer_dir.iterdir())
+        except OSError:
+            continue
+        for path in children:
+            try:
+                is_video = path.is_file() and path.suffix.casefold() in VIDEO_EXTENSIONS
+            except OSError:
+                continue
+            if is_video and path not in seen:
+                seen.add(path)
+                files.append(path)
+    return sorted(files, key=lambda p: str(p).casefold())
+
+
+def select_trailer_directory(movie_path: str | Path, trailer_folder: str) -> Path:
+    """Reuse an existing plural trailers folder (any case); otherwise use the configured folder."""
+    movie_dir = _movie_directory(movie_path)
+    configured = movie_dir / trailer_folder
+    if configured.is_dir():
+        return configured
+
+    for existing in trailer_directories(movie_path, trailer_folder):
+        if existing.name.casefold() == "trailers":
+            return existing
+
+    return configured

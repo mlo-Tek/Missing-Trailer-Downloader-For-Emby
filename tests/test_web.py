@@ -24,8 +24,10 @@ class FakeService:
     def test_connection(self):
         return {"ServerName": "Test Emby", "Version": "4.10.0"}
 
-    def scan(self, download=True, should_stop=None):
+    def scan(self, download=True, should_stop=None, progress=None):
         self.scan_calls.append({"download": download, "dry_run": self.settings.dry_run})
+        if progress:
+            progress("FAKE_SCAN          | Movies | test")
         if should_stop and should_stop():
             return []
         return []
@@ -70,6 +72,7 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("Dry-Run Scan starten", html)
         self.assertIn("Echten Scan starten", html)
         self.assertIn("Scan stoppen", html)
+        self.assertIn("Logdatei", html)
         self.assertIn("mlo-Tek/Missing-Trailer-Downloader-For-Emby", html)
         self.assertNotIn("netplexflix/Missing-Trailer-Downloader-For-Plex", html)
         self.assertIn("if (false && section === 'General')", html)
@@ -90,6 +93,7 @@ class WebUiTests(unittest.TestCase):
         self.assertEqual(payload["status"], "idle")
         self.assertIn("scan_progress", payload)
         self.assertIn("stop_requested", payload["scan_progress"])
+        self.assertIn("log_file", payload["scan_progress"])
 
     def test_server_endpoint_uses_emby(self):
         response = self.app.get("/api/server")
@@ -133,6 +137,7 @@ class WebUiTests(unittest.TestCase):
         self.assertTrue(self.service.scan_calls[-1]["dry_run"])
         log = self.app.get("/api/log").get_json()["lines"]
         self.assertTrue(any("DRY-RUN SCAN REQUESTED FROM WEB UI" in line for line in log))
+        self.assertTrue(any("Writing persistent scan log" in line for line in log))
 
     def test_real_run_endpoint_switches_to_real_and_starts_scan(self):
         response = self.app.post("/api/run/real-run")
@@ -149,6 +154,13 @@ class WebUiTests(unittest.TestCase):
         payload = response.get_json()
         self.assertTrue(payload["ok"])
         self.assertIn("running", payload)
+
+    def test_log_files_endpoint_exists(self):
+        response = self.app.get("/api/log/files")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertIn("root", payload)
+        self.assertIn("files", payload)
 
 
 if __name__ == "__main__":

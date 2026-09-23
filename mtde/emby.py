@@ -85,7 +85,9 @@ class EmbyClient:
 
     @staticmethod
     def _fields() -> str:
-        return "Path,Genres,ProviderIds,LocalTrailerCount,RemoteTrailers,DateCreated"
+        # ProductionYear must be requested explicitly so MTDE can use the same
+        # year-aware search/matching behavior as upstream MTDP.
+        return "Path,Genres,ProviderIds,LocalTrailerCount,RemoteTrailers,DateCreated,ProductionYear"
 
     def iter_movies(self, library_name: str, page_size: int = 500) -> Iterator[EmbyMovie]:
         parent_id = self.resolve_library(library_name)
@@ -138,7 +140,7 @@ class EmbyClient:
         params = {
             "Fields": (
                 "Path,Genres,ProviderIds,LocalTrailerCount,RemoteTrailers,DateCreated,"
-                "Overview,OfficialRating,CommunityRating,RunTimeTicks,Studios,People"
+                "ProductionYear,Overview,OfficialRating,CommunityRating,RunTimeTicks,Studios,People"
             )
         }
         r = self.session.get(self._url(f"Items/{item_id}"), params=params, timeout=self.timeout)

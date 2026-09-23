@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.4
+
+Add a first Unraid Docker template and standardize the cookies mount.
+
+- Add `templates/unraid/mtde.xml` with WebUI, config, media and optional cookies path entries
+- Standardize the optional cookies bind mount as `/cookies/cookies.txt`
+- Document the Unraid host path `/mnt/cache/appdata/mtde/cookies.txt`
+- Update the Docker Compose example to show the same cookies mount
+- Keep `COOKIES_FILE` empty by default and only enable `/cookies/cookies.txt` when a readable cookies file exists
+
 ## 0.3.3
 
 Make an unreadable cookies file non-fatal for scans.

@@ -17,6 +17,8 @@ class Candidate:
     duration: int | None
     height: int | None
     channel: str | None
+    thumbnail: str | None = None
+    view_count: int | None = None
 
 
 class TrailerDownloader:
@@ -84,6 +86,8 @@ class TrailerDownloader:
                         duration=int(duration) if duration is not None else None,
                         height=int(entry["height"]) if entry.get("height") else None,
                         channel=entry.get("channel") or entry.get("uploader"),
+                        thumbnail=entry.get("thumbnail"),
+                        view_count=int(entry["view_count"]) if entry.get("view_count") is not None else None,
                     ))
                 if found:
                     break

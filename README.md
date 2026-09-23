@@ -1,12 +1,31 @@
 # Missing Trailer Downloader for Emby (MTDE)
 
-MTDE scans Emby movie libraries for titles without a **local trailer**, searches YouTube with `yt-dlp`, stores a trailer in an Emby-compatible trailer subfolder, and refreshes the affected Emby item.
+MTDE scans Emby movie libraries for titles without a **local trailer**, searches YouTube with `yt-dlp`, stores the result in an Emby-compatible trailer subfolder, and refreshes the affected Emby item.
 
 This repository is a public fork of [`netplexflix/Missing-Trailer-Downloader-For-Plex`](https://github.com/netplexflix/Missing-Trailer-Downloader-For-Plex), adapted for Emby with permission from the upstream project owner.
 
-> **Status:** early Emby port. Movies are implemented first. TV support and more of the original MTDP Web UI will follow.
+> **Status:** `0.2.0` is a Movies-first Emby port. The original MTDP Web UI has been restored as the UI basis and is being adapted to the Emby backend. TV/series support is intentionally hidden until it is actually implemented.
 
-> **AI-assisted development:** this fork is substantially developed with AI assistance, including OpenAI ChatGPT-assisted coding, refactoring, documentation, and tests. The project is therefore intentionally transparent about being **AI-assisted / vibe-coded**. AI-generated or AI-modified code should still be reviewed and tested like any other contribution.
+> **AI-assisted development:** this fork is substantially developed with AI assistance, including OpenAI ChatGPT-assisted coding, refactoring, documentation, and tests. The project is intentionally transparent about being **AI-assisted / vibe-coded**. AI-generated or AI-modified code should be reviewed and tested like any other contribution.
+
+## Web UI
+
+Starting with `0.2.0`, MTDE uses the **original MTDP Web UI as its design and interaction base** instead of the temporary minimal interface used during the first Emby backend port.
+
+The restored UI currently includes:
+
+- MTDP-style dark/purple dashboard and navigation
+- Movies poster grid with missing/local/remote trailer states
+- Emby posters and movie detail modal
+- Manual YouTube trailer search and download
+- Recently downloaded trailer carousel
+- Per-library trailer coverage statistics
+- Emby and yt-dlp service status
+- Settings editing from the Web UI
+- Processing log
+- Global Dry-Run indication and protection
+
+Some upstream UI concepts remain internally named `plexpass` for compatibility with the original JavaScript data model. They are displayed to users as **Remote Trailer** and are backed by Emby remote-trailer metadata, not Plex.
 
 ## Current features
 
@@ -15,8 +34,8 @@ This repository is a public fork of [`netplexflix/Missing-Trailer-Downloader-For
 - Detects local trailers using Emby's `LocalTrailerCount` plus a filesystem fallback
 - Recognizes existing `trailers`, `Trailers`, `trailer`, and `Trailer` directories case-insensitively
 - Empty legacy trailer folders are safe and do not cause scan errors
-- Reuses an existing plural `Trailers`/`trailers` directory for new downloads to avoid duplicate folders caused only by capitalization
-- Remote/online Emby trailers do **not** block downloading a local trailer
+- Reuses an existing plural `Trailers`/`trailers` directory for new downloads
+- Remote/online Emby trailers do **not** block downloading a local trailer during automatic scans
 - YouTube search and download via `yt-dlp`
 - Preferred search language
 - Minimum/maximum trailer resolution
@@ -24,9 +43,9 @@ This repository is a public fork of [`netplexflix/Missing-Trailer-Downloader-For
 - Genre exclusions
 - MKV or MP4 output
 - Per-item Emby refresh after a successful download
-- Emby-path -> container-path mappings for Docker/Unraid
+- Optional Emby-path -> container-path mappings
 - Web UI on port `2121`
-- Global `DRY_RUN` safety switch plus a dedicated Dry-Run button/CLI mode
+- Global `DRY_RUN` safety switch
 - Docker/Unraid-friendly PUID/PGID support
 - GitHub Actions tests and GHCR image publishing
 
@@ -42,16 +61,15 @@ When `DRY_RUN` is enabled, MTDE may query Emby and search YouTube for candidates
 
 - create trailer directories
 - download trailer files
-- rename or delete existing files/folders
+- delete existing trailer files
+- rename existing files/folders
 - refresh Emby metadata
 
-The Web UI also disables the real download button while the global safety switch is active.
-
-The CLI `--dry-run` mode always remains dry regardless of the configured download settings.
+The CLI `--dry-run` mode is also always non-writing. Keep `DRY_RUN: true` for the first scan on an existing library.
 
 ## Existing MTDP trailer folders
 
-MTDP installations may already have folders such as:
+Existing MTDP installations may already have folders such as:
 
 ```text
 Movie (2026)/Trailers/
@@ -59,47 +77,35 @@ Movie (2026)/Trailer/
 Movie (2026)/trailers/
 ```
 
-MTDE scans the common singular/plural variants case-insensitively. If a supported video file already exists there, the movie is reported as `has_local_trailer` and is skipped.
+MTDE scans the common singular/plural variants case-insensitively. If a supported video file already exists there, the movie is treated as having a local trailer and is skipped by automatic downloading.
 
 An **empty** legacy folder is simply treated as empty; it does not trigger an error. For real downloads, MTDE reuses an existing plural `Trailers`/`trailers` folder. Otherwise it creates the configured `TRAILER_FOLDER` (default: `trailers`).
 
 ## Trailer layout
 
-For a movie such as:
+Typical layout:
 
 ```text
-/media/movies/300 (2006)/300 (2006).mkv
-```
-
-MTDE normally writes:
-
-```text
-/media/movies/300 (2006)/
+/data/media/movies/300 (2006)/
 ├── 300 (2006).mkv
 └── trailers/
     └── 300 (2006) - Trailer.mkv
 ```
 
-If the movie already has a plural `Trailers` directory from MTDP, that directory is reused instead of creating a second lowercase directory.
+If the movie already has a plural `Trailers` directory from MTDP, that directory is reused instead of creating another directory differing only by capitalization.
 
 ## Emby API key
 
 Create a dedicated API key in the Emby Server dashboard under **Advanced -> Security**.
 
-MTDE uses Emby's REST API for library discovery, movie metadata, local-trailer state, and item refreshes.
+MTDE uses Emby's REST API for library discovery, movie metadata, posters, trailer state, and targeted item refreshes.
 
 ## Configuration
-
-Copy the example configuration:
-
-```bash
-cp config/config.example.yml config/config.yml
-```
 
 Recommended first-run configuration:
 
 ```yaml
-EMBY_URL: "http://emby:8096"
+EMBY_URL: "http://10.20.20.16:8096"
 EMBY_API_KEY: "CHANGE_ME"
 
 MOVIE_LIBRARIES:
@@ -113,27 +119,40 @@ TRAILER_FOLDER: "trailers"
 TRAILER_FILE_FORMAT: "mkv"
 TRAILER_RESOLUTION_MIN: 1080
 TRAILER_RESOLUTION_MAX: 2160
+MAX_TRAILER_DURATION: 300
+SEARCH_RESULTS: 8
+
+REFRESH_EMBY_AFTER_DOWNLOAD: true
+WEB_PORT: 2121
+
+PATH_MAPPINGS: []
 ```
 
-After checking the dry-run results, change:
+After checking the Dry-Run results, change:
 
 ```yaml
 DRY_RUN: false
 ```
 
-and restart the container to enable actual downloads.
+and restart the container, or change the setting in the Web UI.
 
 ### Path mappings
 
-The filesystem path returned by Emby may differ from the path visible inside the MTDE container.
-
-Example: Emby reports:
+The simplest Docker/Unraid setup is to mount the media at the **same container path in Emby and MTDE**. For example, if Emby reports:
 
 ```text
 /data/media/movies/300 (2006)/300 (2006).mkv
 ```
 
-but MTDE has the same host media mounted as `/media`. Configure:
+mount the host media into MTDE at `/data/media` as well and use:
+
+```yaml
+PATH_MAPPINGS: []
+```
+
+Only use `PATH_MAPPINGS` when the two containers genuinely see the same host files under different internal paths.
+
+Example:
 
 ```yaml
 PATH_MAPPINGS:
@@ -141,45 +160,36 @@ PATH_MAPPINGS:
     local: "/media"
 ```
 
-If the dry-run shows `path_missing`, fix this mapping before disabling `DRY_RUN`.
-
 ## Unraid
 
 MTDE is not in Community Apps yet. It can be installed directly from GHCR.
 
-Create the config directory first:
+Create the config directory:
 
 ```bash
 mkdir -p /mnt/cache/appdata/mtde
 ```
 
-Create `/mnt/cache/appdata/mtde/config.yml` from `config/config.example.yml`, then add a container in **Docker -> Add Container** with these values:
+Create `/mnt/cache/appdata/mtde/config.yml`, then add a container in **Docker -> Add Container**:
 
 | Field | Value |
 | --- | --- |
 | Name | `MTDE` |
 | Repository | `ghcr.io/mlo-tek/missing-trailer-downloader-for-emby:latest` |
-| Network Type | `bridge` |
 | WebUI | `http://[IP]:[PORT:2121]/` |
 | Container Port | `2121` |
-| Host Port | `2121` |
+| Host Port | `2121` when using bridge networking |
 | Config container path | `/config` |
 | Config host path | `/mnt/cache/appdata/mtde` |
-| Media container path | `/media` |
+| Media container path | `/data/media` if that matches Emby |
 | Media host path | `/mnt/user/data/media` |
 | `PUID` | `99` |
 | `PGID` | `100` |
 | `TZ` | `Europe/Berlin` |
 
-The media mapping must be **read/write** once downloads are enabled.
+The media mapping must be **read/write** once `DRY_RUN` is disabled.
 
-For the complete first-run procedure, including the initial dry-run and path-mapping check, see [`docs/UNRAID.md`](docs/UNRAID.md).
-
-After the container starts, open:
-
-```text
-http://UNRAID-IP:2121
-```
+For more detail see [`docs/UNRAID.md`](docs/UNRAID.md).
 
 ## Docker Compose
 
@@ -196,8 +206,7 @@ services:
       - PGID=100
     volumes:
       - ./config:/config
-      - /path/to/media:/media
-      # - ./cookies:/cookies:ro
+      - /mnt/user/data/media:/data/media
     restart: unless-stopped
 ```
 
@@ -209,7 +218,7 @@ Test Emby connectivity:
 mtde --config /config/config.yml --test
 ```
 
-Dry-run without media writes or Emby refreshes:
+Dry-run:
 
 ```bash
 mtde --config /config/config.yml --dry-run
@@ -223,7 +232,7 @@ mtde --config /config/config.yml --scan
 
 ## Safety behavior
 
-MTDE does not currently delete or replace existing trailers. A movie is skipped when Emby reports a local trailer or when a supported video file is found in a recognized trailer folder.
+MTDE does not automatically replace existing local trailers. A movie is skipped when Emby reports a local trailer or when a supported video file is found in a recognized trailer folder.
 
 Supported local trailer extensions currently include:
 
@@ -231,15 +240,16 @@ Supported local trailer extensions currently include:
 .mkv .mp4 .m4v .mov .avi .webm .ts .m2ts
 ```
 
+Manual deletion from the Web UI is disabled while `DRY_RUN` is active and is restricted to trailer files that MTDE actually detected for the selected Emby item.
+
 ## Roadmap
 
-- TV/series trailers
+- TV/series trailer support and re-enable the original TV Shows UI when ready
+- Complete remaining upstream MTDP feature adaptations for Emby
 - Upgrade/replacement logic for low-resolution trailers
-- Better manual search and candidate selection in the Web UI
-- Download history/statistics
+- Persisted download history/statistics
 - Scheduled scans
 - Emby new-item event/polling support
-- More of the original MTDP Web UI functionality, adapted to Emby
 - Unraid Community Apps template
 
 ## Development
@@ -248,4 +258,4 @@ Supported local trailer extensions currently include:
 python -m unittest discover -s tests -v
 ```
 
-The Emby port keeps the upstream fork relationship and project inspiration while replacing the Plex-specific server integration with an Emby-native API layer.
+The fork deliberately keeps the upstream MTDP UI heritage while replacing the Plex server integration with an Emby-native backend.

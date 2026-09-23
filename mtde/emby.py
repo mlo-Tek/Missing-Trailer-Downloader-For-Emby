@@ -16,6 +16,7 @@ class EmbyMovie:
     local_trailer_count: int
     remote_trailers: list[dict[str, Any]]
     provider_ids: dict[str, str]
+    date_created: str = ""
 
 
 class EmbyClient:
@@ -35,14 +36,12 @@ class EmbyClient:
         return r.json()
 
     def media_folders(self) -> list[dict[str, Any]]:
-        """Return Emby's library media folders with their actual item IDs."""
         r = self.session.get(self._url("Library/MediaFolders"), timeout=self.timeout)
         r.raise_for_status()
         payload = r.json()
         return list(payload.get("Items", [])) if isinstance(payload, dict) else list(payload)
 
     def virtual_folders(self) -> list[dict[str, Any]]:
-        """Admin-level fallback for servers where MediaFolders is unavailable."""
         r = self.session.get(self._url("Library/VirtualFolders/Query"), timeout=self.timeout)
         r.raise_for_status()
         payload = r.json()
@@ -58,7 +57,6 @@ class EmbyClient:
                         return str(item_id)
         except requests.RequestException as exc:
             media_error = exc
-
         try:
             for folder in self.virtual_folders():
                 if str(folder.get("Name", "")).casefold() == name.casefold():
@@ -69,13 +67,26 @@ class EmbyClient:
             if media_error is not None:
                 raise media_error
             raise
-
         raise KeyError(f"Emby library not found: {name}")
+
+    @staticmethod
+    def _movie_from_item(item: dict[str, Any]) -> EmbyMovie:
+        return EmbyMovie(
+            id=str(item.get("Id")),
+            name=str(item.get("Name") or "Unknown"),
+            year=item.get("ProductionYear"),
+            path=str(item.get("Path") or ""),
+            genres=[str(x) for x in item.get("Genres", [])],
+            local_trailer_count=int(item.get("LocalTrailerCount") or 0),
+            remote_trailers=list(item.get("RemoteTrailers") or []),
+            provider_ids={str(k): str(v) for k, v in (item.get("ProviderIds") or {}).items()},
+            date_created=str(item.get("DateCreated") or ""),
+        )
 
     def iter_movies(self, library_name: str, page_size: int = 500) -> Iterator[EmbyMovie]:
         parent_id = self.resolve_library(library_name)
         start = 0
-        fields = "Path,Genres,ProviderIds"
+        fields = "Path,Genres,ProviderIds,LocalTrailerCount,RemoteTrailers,DateCreated"
         while True:
             params = {
                 "ParentId": parent_id,
@@ -92,23 +103,33 @@ class EmbyClient:
             payload = r.json()
             items = payload.get("Items", [])
             for item in items:
-                path = item.get("Path") or ""
-                if not path:
-                    continue
-                yield EmbyMovie(
-                    id=str(item.get("Id")),
-                    name=str(item.get("Name") or "Unknown"),
-                    year=item.get("ProductionYear"),
-                    path=str(path),
-                    genres=[str(x) for x in item.get("Genres", [])],
-                    local_trailer_count=int(item.get("LocalTrailerCount") or 0),
-                    remote_trailers=list(item.get("RemoteTrailers") or []),
-                    provider_ids={str(k): str(v) for k, v in (item.get("ProviderIds") or {}).items()},
-                )
+                movie = self._movie_from_item(item)
+                if movie.path:
+                    yield movie
             start += len(items)
             total = int(payload.get("TotalRecordCount") or len(items))
             if not items or start >= total:
                 break
+
+    def get_item(self, item_id: str) -> dict[str, Any]:
+        params = {"Fields": "Path,Genres,ProviderIds,LocalTrailerCount,RemoteTrailers,DateCreated,Overview,OfficialRating,CommunityRating,RunTimeTicks,Studios,People"}
+        r = self.session.get(self._url(f"Items/{item_id}"), params=params, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
+    def get_movie(self, item_id: str) -> EmbyMovie:
+        item = self.get_item(item_id)
+        movie = self._movie_from_item(item)
+        if not movie.path:
+            raise KeyError(f"Emby movie has no path: {item_id}")
+        return movie
+
+    def fetch_primary_image(self, item_id: str, max_width: int = 600) -> requests.Response:
+        return self.session.get(
+            self._url(f"Items/{item_id}/Images/Primary"),
+            params={"maxWidth": max_width, "quality": 90},
+            timeout=self.timeout,
+        )
 
     def refresh_item(self, item_id: str) -> None:
         params = {

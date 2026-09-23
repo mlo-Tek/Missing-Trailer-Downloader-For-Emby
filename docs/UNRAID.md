@@ -2,6 +2,18 @@
 
 MTDE is not in Community Apps yet. Install it as a normal Docker container using the GHCR image.
 
+A ready-to-import Unraid XML template is included here:
+
+```text
+templates/unraid/mtde.xml
+```
+
+Raw template URL:
+
+```text
+https://raw.githubusercontent.com/mlo-Tek/Missing-Trailer-Downloader-For-Emby/main/templates/unraid/mtde.xml
+```
+
 ## 1. Create appdata and configuration
 
 ```bash
@@ -28,6 +40,7 @@ TRAILER_RESOLUTION_MIN: 1080
 TRAILER_RESOLUTION_MAX: 2160
 MAX_TRAILER_DURATION: 300
 SEARCH_RESULTS: 8
+COOKIES_FILE: ""
 UPGRADE_TRAILERS: "off"
 YT_DLP_CUSTOM_OPTIONS: []
 
@@ -60,11 +73,32 @@ In **Docker -> Add Container** use:
 | Config host path | `/mnt/cache/appdata/mtde` |
 | Media container path | `/data/media` |
 | Media host path | `/mnt/user/data/media` |
+| Cookies container path | `/cookies/cookies.txt` |
+| Cookies host path | `/mnt/cache/appdata/mtde/cookies.txt` |
+| Cookies access mode | `Read Only` |
 | `PUID` | `99` |
 | `PGID` | `100` |
 | `TZ` | `Europe/Berlin` |
 
 The media mapping must be **read/write** after Dry Run is disabled.
+
+The cookies mapping is optional. If you do not use cookies, keep this in `config.yml`:
+
+```yaml
+COOKIES_FILE: ""
+```
+
+If you want yt-dlp to use cookies, create the file and enable the setting:
+
+```bash
+touch /mnt/cache/appdata/mtde/cookies.txt
+chmod 644 /mnt/cache/appdata/mtde/cookies.txt
+chown nobody:users /mnt/cache/appdata/mtde/cookies.txt
+```
+
+```yaml
+COOKIES_FILE: "/cookies/cookies.txt"
+```
 
 When using a custom Unraid network with a dedicated container IP, the WebUI is simply:
 

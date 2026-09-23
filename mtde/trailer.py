@@ -55,9 +55,25 @@ class TrailerDownloader:
         self.max_duration = max_duration
         self.search_results = search_results
         self.output_format = output_format
-        self.cookies_file = cookies_file
+        self.cookies_file_warning: str | None = None
+        self.cookies_file = self._usable_cookies_file(cookies_file)
         self.show_progress = show_progress
         self.custom_options = list(custom_options or [])
+
+    def _usable_cookies_file(self, cookies_file: str | None) -> str | None:
+        if not cookies_file:
+            return None
+        path = Path(cookies_file)
+        try:
+            if not path.is_file():
+                self.cookies_file_warning = f"COOKIES_FILE ignored: {cookies_file} does not exist or is not a file"
+                return None
+            with path.open("rb"):
+                pass
+        except OSError as exc:
+            self.cookies_file_warning = f"COOKIES_FILE ignored: {cookies_file} is not readable ({exc})"
+            return None
+        return str(path)
 
     @property
     def language_terms(self) -> str:

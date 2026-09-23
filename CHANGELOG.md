@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2
+
+Make scan progress visible live in the Web UI processing log.
+
+- Stream per-library and per-movie progress to the Web UI log while a scan is running
+- Add live `CHECKING`, `SEARCHING`, `SEARCH_RESULTS`, `MATCH`, `WOULD_DOWNLOAD`, `HAS_LOCAL_TRAILER`, `PATH_MISSING`, `DOWNLOADING`, `DOWNLOADED` and `STOPPED` style log entries
+- Keep yt-dlp stdout in the container log, but mirror the important scan milestones into MTDE's `/api/log`
+- Preserve cooperative stop behavior; an active yt-dlp operation may still finish before the stop flag is honored
+
 ## 0.3.1
 
 Make Dry Run and real scans directly controllable from the Web UI.

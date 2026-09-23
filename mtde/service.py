@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 import threading
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .config import Settings
 from .emby import EmbyClient, EmbyMovie
@@ -129,16 +129,36 @@ class MTDE:
         })
         return ui
 
-    def scan(self, download: bool | None = None) -> list[ScanResult]:
+    def scan(
+        self,
+        download: bool | None = None,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> list[ScanResult]:
         if not self._scan_lock.acquire(blocking=False):
             raise RuntimeError("A scan is already running")
+        should_stop = should_stop or (lambda: False)
         try:
             requested_download = self.settings.download_trailers if download is None else bool(download)
             do_download = requested_download and self.settings.download_trailers and not self.settings.dry_run
             results: list[ScanResult] = []
             for library in self.settings.movie_libraries:
+                if should_stop():
+                    results.append(ScanResult(library, "", library, None, "stopped", "stop requested"))
+                    break
                 try:
                     for movie in self.emby.iter_movies(library):
+                        if should_stop():
+                            results.append(
+                                ScanResult(
+                                    library,
+                                    movie.id,
+                                    movie.name,
+                                    movie.year,
+                                    "stopped",
+                                    "stop requested",
+                                )
+                            )
+                            return results
                         results.append(self._process_movie(library, movie, do_download))
                 except Exception as exc:
                     results.append(

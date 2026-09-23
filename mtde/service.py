@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import inspect
 from pathlib import Path
 import threading
 from typing import Callable, Iterable
@@ -70,6 +71,27 @@ class MTDE:
 
     def _local_files(self, movie: EmbyMovie) -> list[Path]:
         return find_local_trailers(self._mapped_movie_path(movie), self.settings.trailer_folder)
+
+    @staticmethod
+    def _caller_progress_callback() -> ProgressCallback | None:
+        """Best-effort bridge for the Web UI without changing older callers.
+
+        The Flask UI calls MTDE.scan from a nested run_scan() closure where an
+        add_log() function exists. When no explicit callback is passed, use that
+        function so progress is visible live in the Web UI log, not only in
+        container stdout after the scan returns.
+        """
+        frame = inspect.currentframe()
+        try:
+            caller = frame.f_back.f_back if frame and frame.f_back else None
+            while caller:
+                maybe = caller.f_locals.get("add_log")
+                if callable(maybe):
+                    return maybe
+                caller = caller.f_back
+        finally:
+            del frame
+        return None
 
     @staticmethod
     def _log(progress: ProgressCallback | None, status: str, library: str, title: str, message: str = "") -> None:
@@ -149,6 +171,7 @@ class MTDE:
         if not self._scan_lock.acquire(blocking=False):
             raise RuntimeError("A scan is already running")
         should_stop = should_stop or (lambda: False)
+        progress = progress or self._caller_progress_callback()
         try:
             requested_download = self.settings.download_trailers if download is None else bool(download)
             do_download = requested_download and self.settings.download_trailers and not self.settings.dry_run

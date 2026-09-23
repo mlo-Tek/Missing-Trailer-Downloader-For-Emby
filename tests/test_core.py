@@ -64,6 +64,59 @@ class CoreTests(unittest.TestCase):
         )
         self.assertEqual(downloader.choose([bad, good], "Movie", 2026), good)
 
+    def test_candidate_safety_rejects_unsafe_youtube_results(self):
+        downloader = TrailerDownloader("german", 1080, 2160, 300, 8, "mkv")
+        cases = [
+            (
+                "Bluey's Big Play: Die Bühnenshow",
+                2022,
+                "🔴LIVE: 24 HOURS+ Bluey Episodes in HD! ✨ 💙 | Best Bluey Adventures ☀️ | 18 FULL EPISODES | Bluey",
+            ),
+            (
+                "Forevergreen",
+                2026,
+                "ForeverGreen Powerstrips+Beautystrips Erklärungsvideo (deutsch)",
+            ),
+            (
+                "Für Hund und Katz ist auch noch Platz - Die Reise auf dem Hexenbesen",
+                2012,
+                "Morgens früh um sechs - Kinderlieder zum Mitsingen | Sing Kinderlieder",
+            ),
+            (
+                "Asterix erobert Rom",
+                1976,
+                "ASTERIX UND DAS KÖNIGREICH NUBIEN Trailer German Deutsch (2026)",
+            ),
+            (
+                "Horton hört ein Hu!",
+                2008,
+                "HOPPERS Trailer German Deutsch (2026) Pixar",
+            ),
+            (
+                "Lilo & Stitch 2 - Stitch völlig abgedreht",
+                2005,
+                "FAN TRAILER: Lilo & Stitch 2 - Live Action Trailer (Concept Version)",
+            ),
+        ]
+        for title, year, candidate_title in cases:
+            with self.subTest(title=title):
+                candidate = Candidate("x", candidate_title, 120, 1080, None)
+                self.assertIsNone(downloader.choose([candidate], title, year))
+
+    def test_candidate_safety_allows_exact_real_trailer(self):
+        downloader = TrailerDownloader("german", 1080, 2160, 300, 8, "mkv")
+        candidate = Candidate(
+            "x",
+            "Die wilden Hühner und die Liebe - Trailer",
+            120,
+            1080,
+            None,
+        )
+        self.assertEqual(
+            downloader.choose([candidate], "Die Wilden Hühner und die Liebe", 2007),
+            candidate,
+        )
+
     def test_global_dry_run_blocks_download_even_when_requested(self):
         with TemporaryDirectory() as tmp:
             movie_file = Path(tmp) / "Movie" / "Movie.mkv"

@@ -129,7 +129,25 @@ trailers
 
 An empty legacy trailer folder is not an error. A folder containing a supported video file counts as an existing local trailer. Existing plural `Trailers`/`trailers` directories are reused for later downloads.
 
-## 4. Enable downloads
+## 4. Logs
+
+MTDE keeps logs in appdata so they survive container restarts.
+
+General service log:
+
+```text
+/mnt/cache/appdata/mtde/logs/mtde.log
+```
+
+Per-run movie scan logs:
+
+```text
+/mnt/cache/appdata/mtde/logs/Movies/log_YYYYMMDD_HHMMSS.txt
+```
+
+The Web UI processing log still streams live, but the same scan milestones are also written to the per-run file under `logs/Movies`.
+
+## 5. Enable downloads
 
 After reviewing the Dry Run results, either change the switch in the Web UI or set:
 

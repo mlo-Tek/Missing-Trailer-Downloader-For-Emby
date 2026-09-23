@@ -4,50 +4,178 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import subprocess
+import unicodedata
 from typing import Any
 
 
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".m4v", ".mov", ".avi", ".webm", ".ts", ".m2ts"}
 LEGACY_TRAILER_FOLDER_NAMES = {"trailer", "trailers"}
 
-_LANGUAGE_SEARCH = {
-    "original": "",
-    "english": "english",
-    "german": "german deutsch",
-    "french": "french français",
-    "spanish": "spanish español",
-    "italian": "italian italiano",
-    "japanese": "japanese",
-    "korean": "korean",
-    "portuguese": "portuguese português",
-    "russian": "russian",
-    "chinese": "chinese",
-}
-
-_TITLE_STOPWORDS = {
-    "a", "an", "and", "auf", "auch", "by", "das", "de", "del", "der", "des",
-    "die", "ein", "eine", "einer", "eines", "for", "für", "im", "in", "la",
-    "le", "mit", "of", "oder", "on", "the", "und", "von", "zu", "zum", "zur",
-}
-
-_REJECT_PATTERNS = [
-    r"\b24\s*hours?\b",
-    r"\bhours\+\b",
-    r"\blive\b",
-    r"\bfull\s+episodes?\b",
-    r"\bepisodes?\b",
-    r"\btheme\b",
-    r"\bcover\b",
-    r"\bfan\s*trailer\b",
-    r"\bconcept\b",
-    r"\breaction\b",
-    r"\breview\b",
-    r"\bexplained\b",
-    r"\berklärungsvideo\b",
-    r"\bwerbung\b",
-    r"\bkinderlieder?\b",
-    r"\bmitsingen\b",
+# Kept in sync with upstream MTDP Movies.py. MTDE only adapts the media-server
+# integration; trailer search/matching should remain upstream-compatible.
+NEGATIVE_TITLE_KEYWORDS = [
+    "reaction", "react", "review", "behind the scenes",
+    "making of", "breakdown", "explained", "analysis", "fan made",
+    "fan-made", "parody", "spoof", "honest trailer", "honest trailers",
+    "everything wrong", "pitch meeting", "recap", "summary",
+    "cast interview", "press tour", "red carpet",
+    "deleted scene", "bloopers", "gag reel", "easter egg",
+    "theory", "theories", "predictions", "ending explained",
+    "watch along", "commentary", "video essay", "ranking",
+    "top 10", "every trailer", "all trailers", "trailer compilation",
 ]
+
+# Small MTDE additions based on bad matches observed in Dry Run. These are
+# content types, not title heuristics, so they complement rather than replace
+# the upstream matching logic.
+ADDITIONAL_NEGATIVE_TITLE_KEYWORDS = [
+    "live stream", "24 hours", "24 hours+",
+    "full episode", "full episodes",
+    "concept trailer", "erklärungsvideo",
+    "kinderlied", "kinderlieder",
+]
+
+PREFERRED_CHANNEL_KEYWORDS = [
+    "official", "vevo", "pictures", "studios", "entertainment",
+    "warner", "universal", "sony", "disney", "paramount", "lionsgate",
+    "a24", "fox", "mgm", "hbo", "netflix", "hulu", "amazon", "apple tv",
+    "peacock", "showtime", "starz", "amc", "fx", "bbc", "cbs", "nbc", "abc",
+]
+
+TRAILER_NOISE_WORDS = {
+    "official", "new", "exclusive", "international", "final", "first",
+    "full", "main", "original", "extended", "teaser", "trailer",
+    "hd", "4k", "uhd", "imax", "dolby", "restoration",
+    "tv", "spot", "clip", "promo", "preview", "sneak", "peek",
+}
+
+LANGUAGE_KEYWORDS = {
+    "german": ["deutsch", "german", "auf deutsch", "de"],
+    "french": ["français", "francais", "french", "vf", "vostfr", "fr"],
+    "spanish": ["español", "espanol", "spanish", "castellano", "es"],
+    "italian": ["italiano", "italian", "it"],
+    "japanese": ["日本語", "japanese", "jp", "ja"],
+    "korean": ["한국어", "korean", "ko"],
+    "portuguese": ["português", "portugues", "portuguese", "pt", "dublado"],
+    "russian": ["русский", "russian", "ru"],
+    "chinese": ["中文", "chinese", "zh"],
+    "english": ["english", "en"],
+}
+
+
+def is_likely_trailer(video_title: str) -> bool:
+    """Upstream MTDP non-trailer title filter plus narrow MTDE safety additions."""
+    title_lower = video_title.lower()
+    blocked = NEGATIVE_TITLE_KEYWORDS + ADDITIONAL_NEGATIVE_TITLE_KEYWORDS
+    return not any(keyword in title_lower for keyword in blocked)
+
+
+def normalize_title_for_match(text: str) -> str:
+    """Normalize titles the same way as upstream MTDP."""
+    text = unicodedata.normalize("NFKD", text.lower())
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    text = text.replace("&", " and ")
+    text = re.sub(r"[-–—/_]", " ", text)
+    text = re.sub(r"[^\w\s]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def is_standalone_title_match(movie_title_lower: str, video_title_lower: str) -> bool:
+    """Upstream MTDP standalone title guard, including short-title protection."""
+    if not movie_title_lower:
+        return False
+    pattern = r"\b" + re.escape(movie_title_lower) + r"\b"
+    match = re.search(pattern, video_title_lower)
+    if not match:
+        return False
+
+    movie_words = movie_title_lower.split()
+    if len(movie_words) <= 2:
+        prefix = video_title_lower[:match.start()].strip()
+        if prefix:
+            prefix = re.sub(r"[|\-:!]", " ", prefix).strip()
+            prefix_words = prefix.split()
+            significant = [
+                word
+                for word in prefix_words
+                if word not in TRAILER_NOISE_WORDS and len(word) > 2
+            ]
+            if significant:
+                return False
+    return True
+
+
+def verify_title_match(video_title: str, movie_title: str, year: int | None) -> bool:
+    """Port of upstream MTDP's eight-level movie-title verification."""
+    video_title_lower = video_title.lower()
+    movie_title_lower = movie_title.lower()
+    year_str = str(year) if year is not None else ""
+    has_year = bool(year_str and year_str in video_title_lower)
+
+    sanitized_movie = normalize_title_for_match(movie_title_lower)
+    sanitized_video = normalize_title_for_match(video_title_lower)
+
+    # Levels 1-5: year present.
+    if has_year:
+        if is_standalone_title_match(movie_title_lower, video_title_lower):
+            return True
+
+        movie_title_parts = movie_title_lower.split(":")
+        if len(movie_title_parts) > 1:
+            if all(part.strip() in video_title_lower for part in movie_title_parts):
+                return True
+
+        if is_standalone_title_match(sanitized_movie, sanitized_video):
+            return True
+
+        if len(movie_title_lower) > 20:
+            partial_title = movie_title_lower[: int(len(movie_title_lower) * 0.7)]
+            if partial_title in video_title_lower:
+                return True
+
+        movie_words = set(sanitized_movie.split())
+        video_words = set(sanitized_video.split())
+        stopwords = {"the", "a", "an", "of", "and", "in", "to", "for", "is", "on", "at"}
+        movie_significant = movie_words - stopwords
+        if movie_significant and len(movie_significant) >= 2:
+            overlap = movie_significant & video_words
+            if len(overlap) / len(movie_significant) >= 0.8:
+                return True
+
+    # Levels 6-7: no year, require trailer + specific title.
+    has_trailer_keyword = "trailer" in video_title_lower
+    is_specific_title = len(movie_title_lower.split()) >= 3 or len(movie_title_lower) >= 15
+
+    if has_trailer_keyword and is_specific_title:
+        if (
+            is_standalone_title_match(movie_title_lower, video_title_lower)
+            or is_standalone_title_match(sanitized_movie, sanitized_video)
+        ):
+            return True
+
+        movie_title_parts = movie_title_lower.split(":")
+        if len(movie_title_parts) > 1:
+            if all(part.strip() in video_title_lower for part in movie_title_parts):
+                return True
+
+    # Level 8: short title without year.
+    if has_trailer_keyword and not is_specific_title:
+        if is_standalone_title_match(movie_title_lower, video_title_lower):
+            return True
+        if is_standalone_title_match(sanitized_movie, sanitized_video):
+            return True
+
+    return False
+
+
+def _matches_language_keyword(text: str, keywords: list[str]) -> bool:
+    for keyword in keywords:
+        if len(keyword) <= 3:
+            if re.search(r"\b" + re.escape(keyword) + r"\b", text):
+                return True
+        elif keyword in text:
+            return True
+    return False
 
 
 @dataclass
@@ -59,6 +187,8 @@ class Candidate:
     channel: str | None
     thumbnail: str | None = None
     view_count: int | None = None
+    search_position: int = 99
+    query_index: int = 0
 
 
 class TrailerDownloader:
@@ -78,7 +208,7 @@ class TrailerDownloader:
         self.min_height = min_height
         self.max_height = max_height
         self.max_duration = max_duration
-        self.search_results = search_results
+        self.search_results = max(15, int(search_results))
         self.output_format = output_format
         self.cookies_file_warning: str | None = None
         self.cookies_file = self._usable_cookies_file(cookies_file)
@@ -91,26 +221,31 @@ class TrailerDownloader:
         path = Path(cookies_file)
         try:
             if not path.is_file():
-                self.cookies_file_warning = f"COOKIES_FILE ignored: {cookies_file} does not exist or is not a file"
+                self.cookies_file_warning = (
+                    f"COOKIES_FILE ignored: {cookies_file} does not exist or is not a file"
+                )
                 return None
             with path.open("rb"):
                 pass
         except OSError as exc:
-            self.cookies_file_warning = f"COOKIES_FILE ignored: {cookies_file} is not readable ({exc})"
+            self.cookies_file_warning = (
+                f"COOKIES_FILE ignored: {cookies_file} is not readable ({exc})"
+            )
             return None
         return str(path)
 
-    @property
-    def language_terms(self) -> str:
-        return _LANGUAGE_SEARCH.get(self.preferred_language, self.preferred_language)
-
     def queries(self, title: str, year: int | None) -> list[str]:
-        year_text = f" {year}" if year else ""
-        lang_text = f" {self.language_terms}" if self.language_terms else ""
+        # Same three queries and order as upstream MTDP.
+        year_text = str(year) if year is not None else ""
+        language_suffix = (
+            f" {self.preferred_language}"
+            if self.preferred_language != "original"
+            else ""
+        )
         queries = [
-            f"{title}{year_text} official trailer{lang_text}".strip(),
-            f"{title}{year_text} trailer{lang_text}".strip(),
-            f"{title}{year_text} official trailer".strip(),
+            f"{title} {year_text} official trailer{language_suffix}".strip(),
+            f"{title} trailer {year_text}{language_suffix}".strip(),
+            f"{title} {year_text} movie trailer{language_suffix}".strip(),
         ]
         return list(dict.fromkeys(queries))
 
@@ -125,8 +260,6 @@ class TrailerDownloader:
         except (Exception, SystemExit) as exc:
             raise ValueError(f"Invalid YT_DLP_CUSTOM_OPTIONS: {exc}") from exc
 
-        # MTDE owns these values because changing them could bypass the configured
-        # media path, format, safety or download behavior.
         protected = {
             "outtmpl", "paths", "download_archive", "skip_download",
             "simulate", "format", "merge_output_format", "cookiefile",
@@ -148,17 +281,28 @@ class TrailerDownloader:
         return opts
 
     def search(self, title: str, year: int | None) -> list[Candidate]:
+        """Search using the upstream query order and candidate pre-filters."""
         seen: set[str] = set()
         found: list[Candidate] = []
         opts = self._common_opts() | {"extract_flat": True, "skip_download": True}
         import yt_dlp
 
         with yt_dlp.YoutubeDL(opts) as ydl:
-            for query in self.queries(title, year):
-                data = ydl.extract_info(f"ytsearch{self.search_results}:{query}", download=False) or {}
-                for entry in data.get("entries") or []:
+            for query_index, query in enumerate(self.queries(title, year)):
+                data = ydl.extract_info(
+                    f"ytsearch{self.search_results}:{query}", download=False
+                ) or {}
+                for position, entry in enumerate(data.get("entries") or []):
                     if not entry:
                         continue
+                    duration = entry.get("duration")
+                    # Upstream rejects unknown duration and >5 minutes.
+                    if not duration or int(duration) > self.max_duration:
+                        continue
+                    video_title = str(entry.get("title") or "")
+                    if not is_likely_trailer(video_title):
+                        continue
+
                     url = entry.get("webpage_url")
                     if not url and entry.get("id"):
                         url = f"https://www.youtube.com/watch?v={entry['id']}"
@@ -166,107 +310,110 @@ class TrailerDownloader:
                     if not url or str(url) in seen:
                         continue
                     seen.add(str(url))
-                    duration = entry.get("duration")
-                    if duration is not None and int(duration) > self.max_duration:
-                        continue
-                    found.append(Candidate(
-                        url=str(url),
-                        title=str(entry.get("title") or ""),
-                        duration=int(duration) if duration is not None else None,
-                        height=int(entry["height"]) if entry.get("height") else None,
-                        channel=entry.get("channel") or entry.get("uploader"),
-                        thumbnail=entry.get("thumbnail"),
-                        view_count=int(entry["view_count"]) if entry.get("view_count") is not None else None,
-                    ))
-                if found:
-                    break
+
+                    found.append(
+                        Candidate(
+                            url=str(url),
+                            title=video_title,
+                            duration=int(duration),
+                            height=int(entry["height"]) if entry.get("height") else None,
+                            channel=entry.get("channel") or entry.get("uploader"),
+                            thumbnail=entry.get("thumbnail"),
+                            view_count=(
+                                int(entry["view_count"])
+                                if entry.get("view_count") is not None
+                                else None
+                            ),
+                            search_position=position,
+                            query_index=query_index,
+                        )
+                    )
         return found
 
-    @staticmethod
-    def _tokens(text: str) -> list[str]:
-        tokens: list[str] = []
-        for token in re.findall(r"[\wÀ-ÿ]+", text.casefold()):
-            if token in _TITLE_STOPWORDS:
-                continue
-            if token.isdigit() or len(token) > 2:
-                tokens.append(token)
-        return tokens
-
-    @classmethod
-    def _title_match_ratio(cls, candidate_title: str, movie_title: str) -> float:
-        movie_tokens = cls._tokens(movie_title)
-        if not movie_tokens:
-            return 0.0
-        candidate_tokens = set(cls._tokens(candidate_title))
-        if not candidate_tokens:
-            return 0.0
-        digit_tokens = {token for token in movie_tokens if token.isdigit()}
-        if digit_tokens and not digit_tokens.issubset(candidate_tokens):
-            return 0.0
-        return len(set(movie_tokens) & candidate_tokens) / len(set(movie_tokens))
-
-    @classmethod
-    def is_safe_candidate(cls, candidate: Candidate, movie_title: str, year: int | None) -> bool:
-        text = candidate.title.casefold()
-        if any(re.search(pattern, text) for pattern in _REJECT_PATTERNS):
-            return False
-
-        years = {int(match) for match in re.findall(r"\b(19\d{2}|20\d{2})\b", text)}
-        if year and years and year not in years:
-            return False
-
-        # Main guard: the candidate must meaningfully contain the requested movie
-        # title. This intentionally skips weak franchise-only matches instead of
-        # downloading a wrong sequel, live stream, theme, cover or unrelated clip.
-        ratio = cls._title_match_ratio(candidate.title, movie_title)
-        if ratio >= 0.50:
-            return True
-
-        # Some libraries keep bilingual titles separated by dash/colon. Accept a
-        # unique two-word segment when it is fully present, but do not use this to
-        # accept one-word franchise-only matches such as only "Asterix" or "Zogg".
-        for segment in re.split(r"\s[-:–—]\s", movie_title):
-            segment_tokens = cls._tokens(segment)
-            if len(segment_tokens) >= 2:
-                segment_ratio = cls._title_match_ratio(candidate.title, segment)
-                if segment_ratio >= 0.90:
-                    return True
-        return False
-
-    @staticmethod
-    def _score(candidate: Candidate, movie_title: str, year: int | None, language: str) -> int:
-        text = candidate.title.casefold()
+    def _score(self, candidate: Candidate, year: int | None) -> int:
+        """Port of upstream MTDP score_video()."""
         score = 0
-        if "official" in text or "offiziell" in text:
-            score += 30
-        if "trailer" in text:
-            score += 20
-        if year and str(year) in text:
-            score += 8
-        words = [w.casefold() for w in re.findall(r"[\wÀ-ÿ]+", movie_title) if len(w) > 2]
-        score += sum(3 for w in words if w in text)
-        lang_terms = _LANGUAGE_SEARCH.get(language.casefold(), language.casefold()).split()
-        for term in lang_terms:
-            if len(term) > 2 and term in text:
-                score += 7
-        if "teaser" in text:
-            score -= 8
-        if "reaction" in text or "review" in text:
-            score -= 25
-        if "theme" in text or "cover" in text or "fan trailer" in text:
-            score -= 40
+        channel = (candidate.channel or "").lower()
+        title = (candidate.title or "").lower()
+
+        if "official" in title:
+            score += 2
+        if "trailer" in title:
+            score += 2
+        for keyword in PREFERRED_CHANNEL_KEYWORDS:
+            if keyword in channel:
+                score += 3
+                break
+
+        view_count = candidate.view_count or 0
+        if view_count > 1_000_000:
+            score += 2
+        elif view_count > 100_000:
+            score += 1
+
+        if candidate.search_position == 0:
+            score += 3
+        elif candidate.search_position == 1:
+            score += 2
+        elif candidate.search_position <= 3:
+            score += 1
+
+        if year is not None:
+            movie_year = str(year)
+            years_in_title = re.findall(r"\b((?:19|20)\d{2})\b", title)
+            if years_in_title and movie_year not in years_in_title:
+                score -= 3
+
+        if self.preferred_language != "original":
+            lang_keywords = LANGUAGE_KEYWORDS.get(
+                self.preferred_language, [self.preferred_language]
+            )
+            matches_preferred = _matches_language_keyword(
+                title, lang_keywords
+            ) or _matches_language_keyword(channel, lang_keywords)
+            if matches_preferred:
+                score += 25
+            else:
+                other_language_keywords: list[str] = []
+                for language, keywords in LANGUAGE_KEYWORDS.items():
+                    if language != self.preferred_language:
+                        other_language_keywords.extend(
+                            keyword for keyword in keywords if len(keyword) >= 4
+                        )
+                if _matches_language_keyword(title, other_language_keywords):
+                    score -= 15
+
         return score
 
-    def choose(self, candidates: list[Candidate], movie_title: str, year: int | None) -> Candidate | None:
-        safe_candidates = [
-            candidate for candidate in candidates
-            if self.is_safe_candidate(candidate, movie_title, year)
-        ]
-        if not safe_candidates:
+    def choose(
+        self,
+        candidates: list[Candidate],
+        movie_title: str,
+        year: int | None,
+    ) -> Candidate | None:
+        """Select like upstream: query-by-query, score first, verify title second."""
+        if not candidates:
             return None
-        return max(safe_candidates, key=lambda c: self._score(c, movie_title, year, self.preferred_language))
 
-    def download(self, candidate: Candidate, output_stem: Path, ignore_minimum: bool = False) -> Path:
+        query_indexes = sorted({candidate.query_index for candidate in candidates})
+        for query_index in query_indexes:
+            group = [
+                candidate
+                for candidate in candidates
+                if candidate.query_index == query_index
+            ]
+            group.sort(key=lambda candidate: self._score(candidate, year), reverse=True)
+            for candidate in group:
+                if verify_title_match(candidate.title, movie_title, year):
+                    return candidate
+        return None
+
+    def download(
+        self,
+        candidate: Candidate,
+        output_stem: Path,
+        ignore_minimum: bool = False,
+    ) -> Path:
         output_stem.parent.mkdir(parents=True, exist_ok=True)
         outtmpl = str(output_stem) + ".%(ext)s"
         if ignore_minimum:
@@ -290,7 +437,11 @@ class TrailerDownloader:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(candidate.url, download=True)
             requested = info.get("requested_downloads") or []
-            paths = [Path(x.get("filepath")) for x in requested if x.get("filepath")]
+            paths = [
+                Path(item.get("filepath"))
+                for item in requested
+                if item.get("filepath")
+            ]
             prepared = Path(ydl.prepare_filename(info))
         expected = output_stem.with_suffix("." + self.output_format)
         if expected.exists():
@@ -305,7 +456,9 @@ class TrailerDownloader:
         )
         if matches:
             return matches[0]
-        raise FileNotFoundError(f"yt-dlp completed but no output file was found for {output_stem}")
+        raise FileNotFoundError(
+            f"yt-dlp completed but no output file was found for {output_stem}"
+        )
 
 
 def probe_video_height(path: str | Path) -> int | None:
@@ -352,7 +505,14 @@ def trailer_directories(movie_path: str | Path, trailer_folder: str) -> list[Pat
     except OSError:
         return []
 
-    return sorted(found, key=lambda p: (p.name.casefold() != trailer_folder.casefold(), p.name.casefold(), p.name))
+    return sorted(
+        found,
+        key=lambda p: (
+            p.name.casefold() != trailer_folder.casefold(),
+            p.name.casefold(),
+            p.name,
+        ),
+    )
 
 
 def find_local_trailers(movie_path: str | Path, trailer_folder: str) -> list[Path]:
@@ -366,7 +526,9 @@ def find_local_trailers(movie_path: str | Path, trailer_folder: str) -> list[Pat
             continue
         for path in children:
             try:
-                is_video = path.is_file() and path.suffix.casefold() in VIDEO_EXTENSIONS
+                is_video = (
+                    path.is_file() and path.suffix.casefold() in VIDEO_EXTENSIONS
+                )
             except OSError:
                 continue
             if is_video and path not in seen:

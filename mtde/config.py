@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import yaml
 
@@ -31,6 +30,7 @@ class Settings:
     movie_libraries: list[str]
     preferred_language: str = "german deutsch"
     download_trailers: bool = True
+    dry_run: bool = True
     trailer_folder: str = "trailers"
     trailer_file_format: str = "mkv"
     trailer_resolution_min: int = 1080
@@ -61,6 +61,7 @@ class Settings:
             movie_libraries=[str(x) for x in libs],
             preferred_language=str(raw.get("PREFERRED_LANGUAGE", "german deutsch")),
             download_trailers=bool(raw.get("DOWNLOAD_TRAILERS", True)),
+            dry_run=bool(raw.get("DRY_RUN", True)),
             trailer_folder=str(raw.get("TRAILER_FOLDER", "trailers")),
             trailer_file_format=str(raw.get("TRAILER_FILE_FORMAT", "mkv")).lower(),
             trailer_resolution_min=int(raw.get("TRAILER_RESOLUTION_MIN", 1080)),

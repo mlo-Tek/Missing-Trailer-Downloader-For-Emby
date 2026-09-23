@@ -60,7 +60,7 @@ class Settings:
     trailer_resolution_min: int = 1080
     trailer_resolution_max: int = 2160
     max_trailer_duration: int = 300
-    search_results: int = 8
+    search_results: int = 15
     trailer_folder: str = "trailers"
     yt_dlp_custom_options: list[str] = field(default_factory=list)
     cookies_file: str | None = None
@@ -124,7 +124,7 @@ class Settings:
             trailer_resolution_min=int(raw.get("TRAILER_RESOLUTION_MIN", 1080)),
             trailer_resolution_max=int(raw.get("TRAILER_RESOLUTION_MAX", 2160)),
             max_trailer_duration=int(raw.get("MAX_TRAILER_DURATION", 300)),
-            search_results=int(raw.get("SEARCH_RESULTS", 8)),
+            search_results=max(15, int(raw.get("SEARCH_RESULTS", 15))),
             trailer_folder=str(raw.get("TRAILER_FOLDER", "trailers")),
             yt_dlp_custom_options=[str(x) for x in raw.get("YT_DLP_CUSTOM_OPTIONS", [])],
             cookies_file=raw.get("COOKIES_FILE") or None,
@@ -159,8 +159,8 @@ class Settings:
             raise ValueError("Trailer resolutions must be positive")
         if self.max_trailer_duration <= 0:
             raise ValueError("MAX_TRAILER_DURATION must be greater than 0")
-        if self.search_results < 1:
-            raise ValueError("SEARCH_RESULTS must be at least 1")
+        if self.search_results < 15:
+            raise ValueError("SEARCH_RESULTS must be at least 15 to match upstream MTDP search depth")
         if not self.trailer_folder or "/" in self.trailer_folder or "\\" in self.trailer_folder:
             raise ValueError("TRAILER_FOLDER must be a single folder name")
         if self.upgrade_trailers not in {"off", "local"}:

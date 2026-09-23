@@ -10,7 +10,13 @@ from .service import MTDE
 
 def create_app(service: MTDE) -> Flask:
     app = Flask(__name__)
-    state = {"running": False, "last_run": None, "results": []}
+    state = {
+        "running": False,
+        "last_run": None,
+        "results": [],
+        "dry_run": service.settings.dry_run,
+        "download_trailers": service.settings.download_trailers,
+    }
     lock = threading.Lock()
 
     def run_scan(download: bool):
@@ -31,6 +37,8 @@ def create_app(service: MTDE) -> Flask:
 
     @app.get("/api/status")
     def status():
+        state["dry_run"] = service.settings.dry_run
+        state["download_trailers"] = service.settings.download_trailers
         return jsonify(state)
 
     @app.get("/api/server")
@@ -43,10 +51,16 @@ def create_app(service: MTDE) -> Flask:
 
     @app.post("/api/scan")
     def scan():
-        download = request.args.get("download", "true").lower() not in {"0", "false", "no"}
+        requested_download = request.args.get("download", "true").lower() not in {"0", "false", "no"}
+        effective_download = requested_download and service.settings.download_trailers and not service.settings.dry_run
         if state["running"]:
             return jsonify({"ok": False, "error": "scan already running"}), 409
-        threading.Thread(target=run_scan, args=(download,), daemon=True).start()
-        return jsonify({"ok": True, "download": download}), 202
+        threading.Thread(target=run_scan, args=(requested_download,), daemon=True).start()
+        return jsonify({
+            "ok": True,
+            "requested_download": requested_download,
+            "effective_download": effective_download,
+            "dry_run": service.settings.dry_run,
+        }), 202
 
     return app

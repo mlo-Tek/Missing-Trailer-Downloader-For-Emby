@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1
+
+Make Dry Run and real scans directly controllable from the Web UI.
+
+- Add dashboard buttons for `Dry-Run Scan starten`, `Echten Scan starten` and `Scan stoppen`
+- Add `/api/run/dry-run`, `/api/run/real-run`, `/api/run/stop` and `/api/run/status`
+- Persist the selected run mode by writing `DRY_RUN` back to `config.yml`
+- Log explicit UI requests such as `DRY-RUN SCAN REQUESTED FROM WEB UI` and `REAL RUN REQUESTED FROM WEB UI`
+- Add scan status fields for running/stopping, current mode, start time and last run
+- Add cooperative stop handling between movies; an active yt-dlp download may finish before the stop takes effect
+- Keep scheduler start/stop separate from scan stop to avoid UI confusion
+
 ## 0.3.0
 
 Bring the restored MTDP settings experience in line with the Emby-native backend.

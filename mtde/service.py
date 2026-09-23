@@ -7,7 +7,7 @@ from typing import Iterable
 
 from .config import Settings
 from .emby import EmbyClient, EmbyMovie
-from .trailer import TrailerDownloader, find_local_trailers
+from .trailer import TrailerDownloader, find_local_trailers, select_trailer_directory
 
 
 @dataclass
@@ -49,16 +49,12 @@ class MTDE:
                 return genre
         return None
 
-    def _has_local_trailer(self, movie: EmbyMovie) -> bool:
-        if movie.local_trailer_count > 0:
-            return True
-        return bool(find_local_trailers(self._mapped_movie_path(movie), self.settings.trailer_folder))
-
     def scan(self, download: bool | None = None) -> list[ScanResult]:
         if not self._scan_lock.acquire(blocking=False):
             raise RuntimeError("A scan is already running")
         try:
-            do_download = self.settings.download_trailers if download is None else download
+            requested_download = self.settings.download_trailers if download is None else bool(download)
+            do_download = requested_download and self.settings.download_trailers and not self.settings.dry_run
             results: list[ScanResult] = []
             for library in self.settings.movie_libraries:
                 try:
@@ -72,13 +68,31 @@ class MTDE:
             self._scan_lock.release()
 
     def _process_movie(self, library: str, movie: EmbyMovie, do_download: bool) -> ScanResult:
-        if self._has_local_trailer(movie):
-            return ScanResult(library, movie.id, movie.name, movie.year, "has_local_trailer")
+        mapped_movie_path = self._mapped_movie_path(movie)
+        local_files = find_local_trailers(mapped_movie_path, self.settings.trailer_folder)
+        if movie.local_trailer_count > 0 or local_files:
+            message_parts: list[str] = []
+            if movie.local_trailer_count > 0:
+                message_parts.append(f"Emby LocalTrailerCount={movie.local_trailer_count}")
+            if local_files:
+                message_parts.append(f"local file: {local_files[0]}")
+                if len(local_files) > 1:
+                    message_parts.append(f"+{len(local_files) - 1} more")
+            return ScanResult(
+                library,
+                movie.id,
+                movie.name,
+                movie.year,
+                "has_local_trailer",
+                "; ".join(message_parts),
+                str(local_files[0]) if local_files else None,
+            )
+
         skipped = self._skip_genre(movie)
         if skipped:
             return ScanResult(library, movie.id, movie.name, movie.year, "genre_skipped", skipped)
 
-        movie_path = self._mapped_movie_path(movie)
+        movie_path = mapped_movie_path
         movie_dir = movie_path if movie_path.is_dir() else movie_path.parent
         if not movie_dir.exists():
             return ScanResult(library, movie.id, movie.name, movie.year, "path_missing", str(movie_dir))
@@ -91,7 +105,7 @@ class MTDE:
             if not do_download:
                 return ScanResult(library, movie.id, movie.name, movie.year, "would_download", chosen.title)
 
-            trailer_dir = movie_dir / self.settings.trailer_folder
+            trailer_dir = select_trailer_directory(movie_path, self.settings.trailer_folder)
             safe_title = "".join(c if c not in '<>:"/\\|?*' else " " for c in movie.name).strip()
             year = f" ({movie.year})" if movie.year else ""
             output_stem = trailer_dir / f"{safe_title}{year} - Trailer"

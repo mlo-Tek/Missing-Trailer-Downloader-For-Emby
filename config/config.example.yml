@@ -6,9 +6,13 @@ MOVIE_LIBRARIES:
   - "Movies"
   # - "Kids Movies"
 
+# Safety switch. Recommended true for the first scan.
+# When true, no trailer files are written and Emby is not refreshed.
+DRY_RUN: true
+
 # Search/download
-PREFERRED_LANGUAGE: "german deutsch"
 DOWNLOAD_TRAILERS: true
+PREFERRED_LANGUAGE: "german deutsch"
 TRAILER_FOLDER: "trailers"
 TRAILER_FILE_FORMAT: "mkv"
 TRAILER_RESOLUTION_MIN: 1080

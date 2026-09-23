@@ -34,27 +34,48 @@ class EmbyClient:
         r.raise_for_status()
         return r.json()
 
+    def media_folders(self) -> list[dict[str, Any]]:
+        """Return Emby's library media folders with their actual item IDs."""
+        r = self.session.get(self._url("Library/MediaFolders"), timeout=self.timeout)
+        r.raise_for_status()
+        payload = r.json()
+        return list(payload.get("Items", [])) if isinstance(payload, dict) else list(payload)
+
     def virtual_folders(self) -> list[dict[str, Any]]:
-        # Emby 4.8+ documents the paged Query endpoint for virtual libraries.
+        """Admin-level fallback for servers where MediaFolders is unavailable."""
         r = self.session.get(self._url("Library/VirtualFolders/Query"), timeout=self.timeout)
         r.raise_for_status()
         payload = r.json()
         return list(payload.get("Items", [])) if isinstance(payload, dict) else list(payload)
 
     def resolve_library(self, name: str) -> str:
-        for folder in self.virtual_folders():
-            if str(folder.get("Name", "")).casefold() == name.casefold():
-                item_id = folder.get("ItemId")
-                if item_id:
-                    return str(item_id)
+        media_error: Exception | None = None
+        try:
+            for folder in self.media_folders():
+                if str(folder.get("Name", "")).casefold() == name.casefold():
+                    item_id = folder.get("Id") or folder.get("ItemId")
+                    if item_id:
+                        return str(item_id)
+        except requests.RequestException as exc:
+            media_error = exc
+
+        try:
+            for folder in self.virtual_folders():
+                if str(folder.get("Name", "")).casefold() == name.casefold():
+                    item_id = folder.get("ItemId") or folder.get("Id")
+                    if item_id:
+                        return str(item_id)
+        except requests.RequestException:
+            if media_error is not None:
+                raise media_error
+            raise
+
         raise KeyError(f"Emby library not found: {name}")
 
     def iter_movies(self, library_name: str, page_size: int = 500) -> Iterator[EmbyMovie]:
         parent_id = self.resolve_library(library_name)
         start = 0
-        fields = ",".join([
-            "Path", "Genres", "ProviderIds", "LocalTrailerCount", "RemoteTrailers", "ProductionYear"
-        ])
+        fields = "Path,Genres,ProviderIds"
         while True:
             params = {
                 "ParentId": parent_id,

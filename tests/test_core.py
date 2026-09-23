@@ -36,15 +36,26 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(EmbyClient("http://emby:8096", "token").base_url, "http://emby:8096/emby")
         self.assertEqual(EmbyClient("http://emby:8096/emby", "token").base_url, "http://emby:8096/emby")
 
-    def test_virtual_folder_query_payload(self):
+    def test_media_folder_library_resolution(self):
         client = EmbyClient("http://emby:8096", "token")
         response = Mock()
         response.raise_for_status.return_value = None
-        response.json.return_value = {"Items": [{"Name": "Movies", "ItemId": "123"}], "TotalRecordCount": 1}
+        response.json.return_value = {"Items": [{"Name": "Movies", "Id": "123"}], "TotalRecordCount": 1}
         client.session.get = Mock(return_value=response)
         self.assertEqual(client.resolve_library("Movies"), "123")
         called_url = client.session.get.call_args.args[0]
-        self.assertTrue(called_url.endswith("/Library/VirtualFolders/Query"))
+        self.assertTrue(called_url.endswith("/Library/MediaFolders"))
+
+    def test_virtual_folder_fallback(self):
+        client = EmbyClient("http://emby:8096", "token")
+        media_response = Mock()
+        media_response.raise_for_status.return_value = None
+        media_response.json.return_value = {"Items": []}
+        virtual_response = Mock()
+        virtual_response.raise_for_status.return_value = None
+        virtual_response.json.return_value = {"Items": [{"Name": "Movies", "ItemId": "456"}]}
+        client.session.get = Mock(side_effect=[media_response, virtual_response])
+        self.assertEqual(client.resolve_library("Movies"), "456")
 
 
 if __name__ == "__main__":

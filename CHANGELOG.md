@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.5
+
+Persist processing logs in appdata like the upstream MTDP workflow.
+
+- Write every Web UI / service log line to `/config/logs/mtde.log`
+- Write every movie scan to a dedicated run log under `/config/logs/Movies/log_YYYYMMDD_HHMMSS.txt`
+- Show the active persistent log file in the dashboard run-status box
+- Add `/api/log/files` to list persisted log files for debugging
+- Keep in-memory Web UI log streaming while also retaining logs across container restarts
+
 ## 0.3.4
 
 Add a first Unraid Docker template and standardize the cookies mount.

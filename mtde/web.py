@@ -53,21 +53,18 @@ def create_app(service: MTDE) -> Flask:
         "download_trailers": service.settings.download_trailers,
         "error_message": "",
         "log_lines": [],
+        "current_log_file": None,
         "movies": [],
         "cache_at": 0.0,
         "last_refreshed": None,
         "scheduler_paused": False,
         "scheduler_next": None,
         "scheduler_signature": None,
-        "watcher": {
-            "enabled": False,
-            "connected": False,
-            "pending": 0,
-            "error": "",
-        },
+        "watcher": {"enabled": False, "connected": False, "pending": 0, "error": ""},
     }
     scan_lock = threading.Lock()
     cache_lock = threading.Lock()
+    log_lock = threading.Lock()
     watcher_seen: set[str] = set()
     watcher_pending: dict[str, float] = {}
     watcher_initialized = False
@@ -75,10 +72,42 @@ def create_app(service: MTDE) -> Flask:
     def config_path() -> Path:
         return Path(os.environ.get("MTDE_CONFIG", "/config/config.yml"))
 
+    def logs_root() -> Path:
+        return config_path().parent / "logs"
+
+    def service_log_path() -> Path:
+        return logs_root() / "mtde.log"
+
+    def movie_log_path() -> Path:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return logs_root() / "Movies" / f"log_{stamp}.txt"
+
+    def append_text_file(path: Path, line: str) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except OSError:
+            # Logging must never break a scan.
+            pass
+
     def add_log(line: str) -> None:
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        state["log_lines"].append(f"{stamp} | {line}")
-        state["log_lines"] = state["log_lines"][-3000:]
+        entry = f"{stamp} | {line}"
+        with log_lock:
+            state["log_lines"].append(entry)
+            state["log_lines"] = state["log_lines"][-3000:]
+            append_text_file(service_log_path(), entry)
+            active_log = state.get("current_log_file")
+            if active_log:
+                append_text_file(Path(str(active_log)), entry)
+
+    def tail_file(path: Path, limit: int) -> list[str]:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            return lines[-limit:]
+        except OSError:
+            return []
 
     def invalidate_cache() -> None:
         state["cache_at"] = 0.0
@@ -132,18 +161,18 @@ def create_app(service: MTDE) -> Flask:
             state["stop_requested"] = False
             state["scan_mode"] = mode
             state["scan_started_at"] = datetime.now().isoformat(timespec="seconds")
+            state["current_log_file"] = str(movie_log_path())
         state["error_message"] = ""
         mode_label = "DRY RUN" if service.settings.dry_run else "REAL RUN"
         add_log(f"Starting movie scan ({mode_label})")
+        add_log(f"Writing persistent scan log to {state['current_log_file']}")
         try:
             results = service.scan(
                 download=download,
                 should_stop=lambda: bool(state["stop_requested"]),
+                progress=add_log,
             )
             state["results"] = service.serialize(results)
-            for result in results:
-                info = f" | {result.message}" if result.message else ""
-                add_log(f"{result.status.upper():18} | {result.library} | {result.title}{info}")
             state["last_run"] = datetime.now().isoformat(timespec="seconds")
             invalidate_cache()
             if state["stop_requested"] or any(x.status == "stopped" for x in results):
@@ -158,6 +187,7 @@ def create_app(service: MTDE) -> Flask:
             state["scan_started_at"] = None
             state["scan_mode"] = None
             state["stop_requested"] = False
+            state["current_log_file"] = None
 
     def start_scan(download: bool = True, mode: str | None = None) -> bool:
         if state["running"]:
@@ -177,6 +207,7 @@ def create_app(service: MTDE) -> Flask:
             "download_trailers": service.settings.download_trailers,
             "started_at": state["scan_started_at"],
             "last_run": state["last_run"],
+            "current_log_file": state.get("current_log_file"),
             "error_message": state["error_message"],
         }
 
@@ -299,6 +330,7 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
     <div>Modus: <strong id="mtde-run-mode">-</strong></div>
     <div>Gestartet: <strong id="mtde-run-started">-</strong></div>
     <div>Letzter Lauf: <strong id="mtde-run-last">-</strong></div>
+    <div>Logdatei: <strong id="mtde-run-logfile">-</strong></div>
   </div>
 </div>
 """
@@ -324,6 +356,7 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
       if(byId('mtde-run-mode')) byId('mtde-run-mode').textContent = s.current_mode || '-';
       if(byId('mtde-run-started')) byId('mtde-run-started').textContent = s.started_at || '-';
       if(byId('mtde-run-last')) byId('mtde-run-last').textContent = s.last_run || '-';
+      if(byId('mtde-run-logfile')) byId('mtde-run-logfile').textContent = s.current_log_file || '-';
       if(byId('mtde-btn-dry-run')) byId('mtde-btn-dry-run').disabled = !!s.running;
       if(byId('mtde-btn-real-run')) byId('mtde-btn-real-run').disabled = !!s.running;
       if(byId('mtde-btn-stop')) byId('mtde-btn-stop').disabled = !s.running || !!s.stop_requested;
@@ -429,6 +462,7 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
                 "stop_requested": rs["stop_requested"],
                 "mode": rs["current_mode"],
                 "started_at": rs["started_at"],
+                "log_file": rs["current_log_file"],
             },
         })
 
@@ -751,7 +785,30 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
     @app.get("/api/log")
     def log():
         limit = max(1, min(int(request.args.get("limit", 1000)), 3000))
-        return jsonify({"lines": state["log_lines"][-limit:]})
+        lines = state["log_lines"][-limit:]
+        if not lines:
+            lines = tail_file(service_log_path(), limit)
+        return jsonify({"lines": lines})
+
+    @app.get("/api/log/files")
+    def log_files():
+        root = logs_root()
+        files = []
+        try:
+            for path in sorted(root.rglob("*.txt")) + sorted(root.glob("*.log")):
+                try:
+                    files.append({
+                        "path": str(path),
+                        "name": path.name,
+                        "size": path.stat().st_size,
+                        "modified": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+                    })
+                except OSError:
+                    continue
+        except OSError:
+            pass
+        files.sort(key=lambda item: item["modified"], reverse=True)
+        return jsonify({"root": str(root), "files": files[:200]})
 
     @app.post("/api/ytdlp/update")
     def ytdlp_update():

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.3
+
+Make an unreadable cookies file non-fatal for scans.
+
+- Validate `COOKIES_FILE` when the downloader is configured
+- Ignore a missing or unreadable cookies file instead of failing each movie search with `Permission denied`
+- Continue YouTube searches without cookies when the configured cookies file is not usable
+
 ## 0.3.2
 
 Make scan progress visible live in the Web UI processing log.

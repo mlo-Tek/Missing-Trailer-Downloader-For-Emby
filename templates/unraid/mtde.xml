@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>MTDE</Name>
+  <Repository>ghcr.io/mlo-tek/missing-trailer-downloader-for-emby:latest</Repository>
+  <Registry>https://ghcr.io/mlo-Tek/Missing-Trailer-Downloader-For-Emby</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/mlo-Tek/Missing-Trailer-Downloader-For-Emby</Support>
+  <Project>https://github.com/mlo-Tek/Missing-Trailer-Downloader-For-Emby</Project>
+  <Overview>Missing Trailer Downloader for Emby. Checks Emby movie libraries for missing local trailers and downloads trailers using yt-dlp.</Overview>
+  <Category>MediaApp:Video</Category>
+  <WebUI>http://[IP]:[PORT:2121]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/mlo-Tek/Missing-Trailer-Downloader-For-Emby/main/templates/unraid/mtde.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/mlo-Tek/Missing-Trailer-Downloader-For-Emby/main/mtde/static/emby_logo.svg</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+
+  <Config Name="WebUI" Target="2121" Default="2121" Mode="tcp" Description="MTDE Web UI" Type="Port" Display="always" Required="true" Mask="false">2121</Config>
+  <Config Name="Config" Target="/config" Default="/mnt/cache/appdata/mtde" Mode="rw" Description="MTDE appdata/config directory. Contains config.yml." Type="Path" Display="always" Required="true" Mask="false">/mnt/cache/appdata/mtde</Config>
+  <Config Name="Media" Target="/data/media" Default="/mnt/user/data/media" Mode="rw" Description="Media root. Use the same container path that Emby uses, preferably /data/media, to avoid PATH_MAPPINGS." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/data/media</Config>
+  <Config Name="Cookies File" Target="/cookies/cookies.txt" Default="/mnt/cache/appdata/mtde/cookies.txt" Mode="ro" Description="Optional Netscape cookies.txt file for yt-dlp. Leave empty/unused if you do not use cookies. In MTDE set COOKIES_FILE to /cookies/cookies.txt." Type="Path" Display="always" Required="false" Mask="false">/mnt/cache/appdata/mtde/cookies.txt</Config>
+
+  <Config Name="PUID" Target="PUID" Default="99" Description="User ID. On Unraid this is normally nobody=99." Type="Variable" Display="always" Required="true" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Description="Group ID. On Unraid this is normally users=100." Type="Variable" Display="always" Required="true" Mask="false">100</Config>
+  <Config Name="TZ" Target="TZ" Default="Europe/Berlin" Description="Timezone" Type="Variable" Display="always" Required="true" Mask="false">Europe/Berlin</Config>
+</Container>

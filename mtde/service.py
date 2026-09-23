@@ -27,6 +27,10 @@ class ScanResult:
     trailer_path: str | None = None
 
 
+ProgressCallback = Callable[[str], None]
+StopCallback = Callable[[], bool]
+
+
 class MTDE:
     def __init__(self, settings: Settings):
         self._scan_lock = threading.Lock()
@@ -66,6 +70,13 @@ class MTDE:
 
     def _local_files(self, movie: EmbyMovie) -> list[Path]:
         return find_local_trailers(self._mapped_movie_path(movie), self.settings.trailer_folder)
+
+    @staticmethod
+    def _log(progress: ProgressCallback | None, status: str, library: str, title: str, message: str = "") -> None:
+        if not progress:
+            return
+        suffix = f" | {message}" if message else ""
+        progress(f"{status.upper():18} | {library} | {title}{suffix}")
 
     def movie_ui(self, library: str, movie: EmbyMovie) -> dict:
         local_files = self._local_files(movie)
@@ -132,7 +143,8 @@ class MTDE:
     def scan(
         self,
         download: bool | None = None,
-        should_stop: Callable[[], bool] | None = None,
+        should_stop: StopCallback | None = None,
+        progress: ProgressCallback | None = None,
     ) -> list[ScanResult]:
         if not self._scan_lock.acquire(blocking=False):
             raise RuntimeError("A scan is already running")
@@ -143,32 +155,36 @@ class MTDE:
             results: list[ScanResult] = []
             for library in self.settings.movie_libraries:
                 if should_stop():
-                    results.append(ScanResult(library, "", library, None, "stopped", "stop requested"))
+                    result = ScanResult(library, "", library, None, "stopped", "stop requested")
+                    results.append(result)
+                    self._log(progress, result.status, library, result.title, result.message)
                     break
                 try:
+                    self._log(progress, "library_start", library, library, "loading movies from Emby")
                     for movie in self.emby.iter_movies(library):
                         if should_stop():
-                            results.append(
-                                ScanResult(
-                                    library,
-                                    movie.id,
-                                    movie.name,
-                                    movie.year,
-                                    "stopped",
-                                    "stop requested",
-                                )
-                            )
+                            result = ScanResult(library, movie.id, movie.name, movie.year, "stopped", "stop requested")
+                            results.append(result)
+                            self._log(progress, result.status, library, movie.name, result.message)
                             return results
-                        results.append(self._process_movie(library, movie, do_download))
+                        self._log(progress, "checking", library, movie.name)
+                        result = self._process_movie(library, movie, do_download, progress=progress)
+                        results.append(result)
                 except Exception as exc:
-                    results.append(
-                        ScanResult(library, "", library, None, "library_error", str(exc))
-                    )
+                    result = ScanResult(library, "", library, None, "library_error", str(exc))
+                    results.append(result)
+                    self._log(progress, result.status, library, library, result.message)
             return results
         finally:
             self._scan_lock.release()
 
-    def _process_movie(self, library: str, movie: EmbyMovie, do_download: bool) -> ScanResult:
+    def _process_movie(
+        self,
+        library: str,
+        movie: EmbyMovie,
+        do_download: bool,
+        progress: ProgressCallback | None = None,
+    ) -> ScanResult:
         mapped_movie_path = self._mapped_movie_path(movie)
         local_files = find_local_trailers(mapped_movie_path, self.settings.trailer_folder)
 
@@ -176,7 +192,7 @@ class MTDE:
             if self.settings.upgrade_trailers == "local" and local_files:
                 height = probe_video_height(local_files[0])
                 if height is not None and height < self.settings.trailer_resolution_min:
-                    return self._upgrade_movie(library, movie, local_files, height, do_download)
+                    return self._upgrade_movie(library, movie, local_files, height, do_download, progress=progress)
 
             message_parts: list[str] = []
             if movie.local_trailer_count > 0:
@@ -185,7 +201,7 @@ class MTDE:
                 message_parts.append(f"local file: {local_files[0]}")
                 if len(local_files) > 1:
                     message_parts.append(f"+{len(local_files) - 1} more")
-            return ScanResult(
+            result = ScanResult(
                 library,
                 movie.id,
                 movie.name,
@@ -194,9 +210,11 @@ class MTDE:
                 "; ".join(message_parts),
                 str(local_files[0]) if local_files else None,
             )
+            self._log(progress, result.status, library, movie.name, result.message)
+            return result
 
         if self.settings.check_remote_trailers and movie.remote_trailers:
-            return ScanResult(
+            result = ScanResult(
                 library,
                 movie.id,
                 movie.name,
@@ -204,22 +222,34 @@ class MTDE:
                 "has_remote_trailer",
                 f"Emby reports {len(movie.remote_trailers)} remote trailer(s)",
             )
+            self._log(progress, result.status, library, movie.name, result.message)
+            return result
 
         skipped = self._skip_genre(library, movie)
         if skipped:
-            return ScanResult(library, movie.id, movie.name, movie.year, "genre_skipped", skipped)
+            result = ScanResult(library, movie.id, movie.name, movie.year, "genre_skipped", skipped)
+            self._log(progress, result.status, library, movie.name, result.message)
+            return result
 
         movie_dir = mapped_movie_path if mapped_movie_path.is_dir() else mapped_movie_path.parent
         if not movie_dir.exists():
-            return ScanResult(library, movie.id, movie.name, movie.year, "path_missing", str(movie_dir))
+            result = ScanResult(library, movie.id, movie.name, movie.year, "path_missing", str(movie_dir))
+            self._log(progress, result.status, library, movie.name, result.message)
+            return result
 
         try:
+            query_hint = f"{movie.name} {movie.year or ''} official trailer {self.settings.preferred_language}".strip()
+            self._log(progress, "searching", library, movie.name, query_hint)
             candidates = self.downloader.search(movie.name, movie.year)
+            self._log(progress, "search_results", library, movie.name, f"{len(candidates)} candidate(s)")
             chosen = self.downloader.choose(candidates, movie.name, movie.year)
             if not chosen:
-                return ScanResult(library, movie.id, movie.name, movie.year, "no_match")
+                result = ScanResult(library, movie.id, movie.name, movie.year, "no_match")
+                self._log(progress, result.status, library, movie.name)
+                return result
+            self._log(progress, "match", library, movie.name, chosen.title)
             if not do_download:
-                return ScanResult(
+                result = ScanResult(
                     library,
                     movie.id,
                     movie.name,
@@ -227,9 +257,12 @@ class MTDE:
                     "would_download",
                     chosen.title,
                 )
+                self._log(progress, result.status, library, movie.name, result.message)
+                return result
 
+            self._log(progress, "downloading", library, movie.name, chosen.title)
             file_path = self._download_candidate(movie, chosen)
-            return ScanResult(
+            result = ScanResult(
                 library,
                 movie.id,
                 movie.name,
@@ -238,8 +271,12 @@ class MTDE:
                 chosen.title,
                 str(file_path),
             )
+            self._log(progress, result.status, library, movie.name, str(file_path))
+            return result
         except Exception as exc:
-            return ScanResult(library, movie.id, movie.name, movie.year, "error", str(exc))
+            result = ScanResult(library, movie.id, movie.name, movie.year, "error", str(exc))
+            self._log(progress, result.status, library, movie.name, result.message)
+            return result
 
     def _upgrade_movie(
         self,
@@ -248,27 +285,36 @@ class MTDE:
         local_files: list[Path],
         old_height: int,
         do_download: bool,
+        progress: ProgressCallback | None = None,
     ) -> ScanResult:
         try:
+            self._log(progress, "upgrade_search", library, movie.name, f"existing trailer is {old_height}p")
             candidates = self.downloader.search(movie.name, movie.year)
+            self._log(progress, "search_results", library, movie.name, f"{len(candidates)} candidate(s)")
             chosen = self.downloader.choose(candidates, movie.name, movie.year)
             if not chosen:
-                return ScanResult(
+                result = ScanResult(
                     library, movie.id, movie.name, movie.year,
                     "upgrade_no_match", f"existing trailer is {old_height}p",
                     str(local_files[0]),
                 )
+                self._log(progress, result.status, library, movie.name, result.message)
+                return result
+            self._log(progress, "upgrade_match", library, movie.name, chosen.title)
             if not do_download:
-                return ScanResult(
+                result = ScanResult(
                     library, movie.id, movie.name, movie.year,
                     "would_upgrade", f"{old_height}p -> {chosen.title}",
                     str(local_files[0]),
                 )
+                self._log(progress, result.status, library, movie.name, result.message)
+                return result
 
             trailer_dir = select_trailer_directory(
                 self._mapped_movie_path(movie), self.settings.trailer_folder,
             )
             temp_stem = trailer_dir / f".mtde-upgrade-{movie.id}"
+            self._log(progress, "upgrade_downloading", library, movie.name, chosen.title)
             new_file = self.downloader.download(chosen, temp_stem)
 
             safe_title = "".join(
@@ -286,15 +332,19 @@ class MTDE:
 
             if self.settings.refresh_emby_after_download:
                 self.emby.refresh_item(movie.id)
-            return ScanResult(
+            result = ScanResult(
                 library, movie.id, movie.name, movie.year,
                 "upgraded", f"{old_height}p -> {chosen.title}", str(final_file),
             )
+            self._log(progress, result.status, library, movie.name, str(final_file))
+            return result
         except Exception as exc:
-            return ScanResult(
+            result = ScanResult(
                 library, movie.id, movie.name, movie.year,
                 "upgrade_error", str(exc), str(local_files[0]),
             )
+            self._log(progress, result.status, library, movie.name, result.message)
+            return result
 
     def _download_candidate(
         self,

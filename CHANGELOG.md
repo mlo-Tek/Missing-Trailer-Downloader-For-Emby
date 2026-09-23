@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.8
+
+Fix Emby movie-year retrieval so the upstream MTDP year-aware search and matching logic receives the same metadata it expects.
+
+- Request `ProductionYear` explicitly from Emby movie list and item-detail queries
+- Restore year-bearing YouTube queries such as `Movie Title 2006 official trailer german`
+- Keep MTDP's year-aware verification and mismatch penalties effective in the Emby fork
+- Add a regression test that ensures `ProductionYear` remains part of the requested Emby fields
+
 ## 0.3.7
 
 Realign automatic movie trailer matching with the upstream MTDP implementation instead of maintaining a separate simplified matcher.

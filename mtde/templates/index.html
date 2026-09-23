@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MTDE</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#111827;color:#e5e7eb;margin:0}.wrap{max-width:1100px;margin:auto;padding:28px}.card{background:#1f2937;border:1px solid #374151;border-radius:14px;padding:18px;margin-bottom:18px}button{padding:10px 14px;border:0;border-radius:9px;cursor:pointer;margin-right:8px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:9px;border-bottom:1px solid #374151}small,.muted{color:#9ca3af}.ok{color:#86efac}.bad{color:#fca5a5}.run{color:#fde68a}
+</style>
+</head>
+<body><div class="wrap">
+<h1>MTDE <small>Missing Trailer Downloader for Emby</small></h1>
+<div class="card"><div id="server">Emby wird geprüft…</div><p><button onclick="scan(true)">Fehlende Trailer laden</button><button onclick="scan(false)">Dry-Run</button></p><div id="state" class="muted"></div></div>
+<div class="card"><table><thead><tr><th>Library</th><th>Film</th><th>Jahr</th><th>Status</th><th>Info</th></tr></thead><tbody id="rows"></tbody></table></div>
+</div>
+<script>
+async function loadServer(){const r=await fetch('/api/server');const j=await r.json();document.getElementById('server').innerHTML=j.ok?`<span class=ok>Emby verbunden:</span> ${j.name||''} ${j.version||''}`:`<span class=bad>Emby Fehler:</span> ${j.error}`}
+async function scan(dl){await fetch('/api/scan?download='+dl,{method:'POST'});poll()}
+async function poll(){const r=await fetch('/api/status');const j=await r.json();document.getElementById('state').textContent=j.running?'Scan läuft…':(j.last_run?'Letzter Lauf: '+j.last_run:'Noch kein Scan');document.getElementById('rows').innerHTML=(j.results||[]).map(x=>`<tr><td>${esc(x.library)}</td><td>${esc(x.title)}</td><td>${x.year||''}</td><td>${esc(x.status)}</td><td>${esc(x.message||x.trailer_path||'')}</td></tr>`).join('');if(j.running)setTimeout(poll,2000)}
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+loadServer();poll();
+</script></body></html>

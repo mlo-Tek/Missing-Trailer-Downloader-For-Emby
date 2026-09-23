@@ -1,49 +1,38 @@
-################################################################################
-##########                         GENERAL:                           ##########
-################################################################################
-'LAUNCH_METHOD': '3'
-'PLEX_URL': 'http://host.docker.internal:32400'
-'PLEX_TOKEN': 'YOUR_PLEX_TOKEN'
-'PLEX_TIMEOUT': 120
-'USE_LABELS': true
+# Missing Trailer Downloader for Emby (MTDE)
+EMBY_URL: "http://emby:8096"
+EMBY_API_KEY: "CHANGE_ME"
 
-################################################################################
-##########                      TV LIBRARIES:                         ##########
-################################################################################
-'TV_LIBRARIES':
-- 'name': 'TV Shows'
-  'genres_to_skip':
-  - 'Talk Show'
-  - 'Stand-Up'
-  - 'News'
+MOVIE_LIBRARIES:
+  - "Movies"
+  # - "Kids Movies"
 
-################################################################################
-##########                    MOVIE LIBRARIES:                        ##########
-################################################################################
-'MOVIE_LIBRARIES':
-- 'name': 'Movies'
-  'genres_to_skip':
-  - 'Short'
-  - 'Stand-Up'
-  - 'Concert'
+# Search/download
+PREFERRED_LANGUAGE: "german deutsch"
+DOWNLOAD_TRAILERS: true
+TRAILER_FOLDER: "trailers"
+TRAILER_FILE_FORMAT: "mkv"
+TRAILER_RESOLUTION_MIN: 1080
+TRAILER_RESOLUTION_MAX: 2160
+MAX_TRAILER_DURATION: 300
+SEARCH_RESULTS: 8
+SKIP_GENRES:
+  - "Short"
+  - "Concert"
 
-################################################################################
-##########                   TRAILER SETTINGS:                        ##########
-################################################################################
-'CHECK_PLEX_PASS_TRAILERS': true
-'DOWNLOAD_TRAILERS': false
-'PREFERRED_LANGUAGE': 'original'
-'REFRESH_METADATA': true
-'SHOW_YT_DLP_PROGRESS': false
-'TRAILER_FILE_FORMAT': 'mp4'
-'TRAILER_RESOLUTION_MAX': '2160'
-'TRAILER_RESOLUTION_MIN': '720'
-'UPGRADE_TRAILERS': 'off' #off, local or local_plexpass
-'YT_DLP_CUSTOM_OPTIONS': []
+# Refresh the affected Emby item after a successful local trailer download
+REFRESH_EMBY_AFTER_DOWNLOAD: true
 
-################################################################################
-##########                   NEW ITEM DETECTION:                      ##########
-################################################################################
-'NEW_ITEM_DETECTION': false
-'NEW_ITEM_DELAY': 60
+# Web UI
+WEB_PORT: 2121
 
+# Reserved for a later internal scheduler. 0 = disabled.
+SCHEDULE_HOURS: 0
+
+# Optional. Use when paths returned by Emby differ from paths mounted in MTDE.
+# Example: Emby returns /data/media/movies/... while MTDE sees /media/movies/...
+PATH_MAPPINGS:
+  - emby: "/data/media"
+    local: "/media"
+
+# Optional Netscape-format cookies file for yt-dlp
+# COOKIES_FILE: "/cookies/cookies.txt"

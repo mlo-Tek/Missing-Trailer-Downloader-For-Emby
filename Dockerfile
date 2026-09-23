@@ -1,60 +1,23 @@
-# Use a slim Python image as the base
-FROM python:3.11-slim
+FROM python:3.12-slim
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    IS_DOCKER=true \
-    DENO_INSTALL="/usr/local" \
-    DENO_DIR="/app/.deno" \
-    SCHEDULE_HOURS=24
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates gosu \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install system dependencies including ffmpeg for yt-dlp and unzip for Deno
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    ffmpeg \
-    curl \
-    unzip \
-    gosu && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install Deno - using direct binary download for reliability
-RUN DENO_VERSION="2.7.9" && \
-    ARCH="$(dpkg --print-architecture)" && \
-    if [ "$ARCH" = "amd64" ]; then DENO_ARCH="x86_64"; \
-    elif [ "$ARCH" = "arm64" ]; then DENO_ARCH="aarch64"; \
-    else echo "Unsupported architecture: $ARCH" && exit 1; fi && \
-    curl -fsSL "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-${DENO_ARCH}-unknown-linux-gnu.zip" -o /tmp/deno.zip && \
-    unzip -q /tmp/deno.zip -d /usr/local/bin && \
-    chmod +x /usr/local/bin/deno && \
-    rm /tmp/deno.zip && \
-    deno --version
-
-# Set working directory
 WORKDIR /app
+COPY requirements.txt pyproject.toml ./
+COPY mtde ./mtde
+RUN pip install --no-cache-dir .
 
-# Copy requirements file
-COPY requirements.txt .
+COPY docker-entrypoint.sh /usr/local/bin/mtde-entrypoint
+RUN chmod +x /usr/local/bin/mtde-entrypoint
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+ENV PYTHONUNBUFFERED=1 \
+    MTDE_CONFIG=/config/config.yml \
+    PUID=99 \
+    PGID=100
 
-# Copy application files
-COPY MTDP.py .
-COPY Modules/ ./Modules/
-COPY webui/ ./webui/
-COPY config/config.example.yml /app/config.example.yml
-
-# Create necessary directories
-RUN mkdir -p /config /media /app/.deno /app/Logs /app/logs
-
-# Expose web UI port
+VOLUME ["/config", "/media", "/cookies"]
 EXPOSE 2121
-
-# Copy and prepare the entrypoint
-COPY docker-entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-# Start with the entrypoint script
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["python", "MTDP.py"]
+ENTRYPOINT ["/usr/local/bin/mtde-entrypoint"]
+CMD []

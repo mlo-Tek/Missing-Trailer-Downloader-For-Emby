@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mtde"
+version = "0.1.0"
+description = "Missing Trailer Downloader for Emby"
+requires-python = ">=3.11"
+dependencies = [
+  "Flask>=3.0,<4",
+  "PyYAML>=6.0,<7",
+  "requests>=2.31,<3",
+  "yt-dlp[default]>=2026.8.19",
+]
+
+[project.scripts]
+mtde = "mtde.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["mtde*"]
+
+[tool.setuptools.package-data]
+mtde = ["templates/*.html"]

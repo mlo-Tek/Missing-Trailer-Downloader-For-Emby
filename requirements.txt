@@ -1,8 +1,4 @@
-plexapi>=4.17.1
-yt-dlp[default]>=2026.08.19
-PyYAML>=6.0.3
-apscheduler>=3.11.0
-flask>=3.0.0
-requests>=2.31.0
-croniter>=2.0.0
-websocket-client>=1.8.0
+Flask>=3.0,<4
+PyYAML>=6.0,<7
+requests>=2.31,<3
+yt-dlp[default]>=2026.8.19

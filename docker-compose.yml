@@ -1,21 +1,15 @@
-version: '3.8'
-
 services:
-  mtdp:
-    image: netplexflix/mtdp:latest
-    container_name: mtdp
-    environment:
-      - PUID=1000  # Change to your user ID
-      - PGID=1000  # Change to your group ID
-      - TZ=America/New_York  # Change to your timezone
-      - SCHEDULE_HOURS=24  # Initial default: run every X hours
-      # - CRON=0 2 * * *  # Initial default: cron schedule (overrides SCHEDULE_HOURS)
-      # - MTDP_DEBUG=true  # Optional: print verbose [DIAG] prewarm/stream lines to console
+  mtde:
+    image: ghcr.io/mlo-tek/missing-trailer-downloader-for-emby:latest
+    container_name: MTDE
     ports:
-      - "2121:2121"  # Web UI
+      - "2121:2121"
     volumes:
-      - ./config:/config  # Mount your config directory
-      - ./logs:/app/Logs  # Optional: persist logs
-      - ./cookies:/cookies  # Optional: location of your cookie file
-      - /path/to/media:/media  # Mount your media directory (same as Plex sees it)
+      - ./config:/config
+      - /path/to/media:/media
+      # - ./cookies:/cookies:ro
+    environment:
+      - TZ=Europe/Berlin
+      - PUID=99
+      - PGID=100
     restart: unless-stopped

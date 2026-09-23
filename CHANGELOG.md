@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.7
+
+Realign automatic movie trailer matching with the upstream MTDP implementation instead of maintaining a separate simplified matcher.
+
+- Port MTDP's movie title normalization and standalone-title matching
+- Port the upstream eight-level `verify_title_match()` logic
+- Port MTDP's negative-title filtering, preferred-channel scoring, YouTube search-position scoring, view-count scoring and preferred-language bonus/penalty
+- Use the same three movie search queries and preserve their priority order
+- Restore the upstream search depth of at least 15 YouTube results per query
+- Keep only a small set of MTDE-specific content-type guards learned from Dry Run false positives; these supplement rather than replace upstream matching
+- Keep the Emby API, local trailer detection, Dry Run, logging and Emby refresh behavior as the Emby-specific adaptation layer
+
 ## 0.3.6
 
 Harden automatic YouTube trailer matching based on Dry Run false positives.

@@ -1,26 +1,17 @@
 import unittest
-from types import SimpleNamespace
 
+from mtde.config import Settings
 from mtde.web import create_app
 
 
 class FakeService:
     def __init__(self):
-        self.settings = SimpleNamespace(
-            dry_run=True,
-            download_trailers=True,
-            movie_libraries=["Movies"],
-            skip_genres=[],
+        self.settings = Settings(
             emby_url="http://emby:8096",
             emby_api_key="token",
-            preferred_language="german deutsch",
-            search_results=8,
-            max_trailer_duration=300,
-            trailer_resolution_min=1080,
-            trailer_resolution_max=2160,
-            trailer_file_format="mkv",
-            trailer_folder="trailers",
-            refresh_emby_after_download=True,
+            movie_libraries=["Movies"],
+            dry_run=True,
+            preferred_language="german",
         )
 
     def test_connection(self):
@@ -42,11 +33,15 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("DRY RUN is active", html)
         self.assertIn("mlo-Tek/Missing-Trailer-Downloader-For-Emby", html)
         self.assertNotIn("netplexflix/Missing-Trailer-Downloader-For-Plex", html)
+        self.assertIn("if (false && section === 'General')", html)
 
     def test_auth_compatibility_does_not_block_ui(self):
         response = self.app.get("/api/auth/status")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json(), {"authenticated": True, "setup_required": False})
+        self.assertEqual(
+            response.get_json(),
+            {"authenticated": True, "setup_required": False},
+        )
 
     def test_status_exposes_dry_run(self):
         response = self.app.get("/api/status")
@@ -59,6 +54,35 @@ class WebUiTests(unittest.TestCase):
         response = self.app.get("/api/server")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["name"], "Test Emby")
+
+    def test_settings_are_emby_native_and_have_no_label_option(self):
+        response = self.app.get("/api/config/settings")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        options = {item["key"]: item for item in payload["options"]}
+
+        for key in (
+            "DRY_RUN",
+            "EMBY_URL",
+            "EMBY_API_KEY",
+            "EMBY_TIMEOUT",
+            "CHECK_REMOTE_TRAILERS",
+            "DOWNLOAD_TRAILERS",
+            "PREFERRED_LANGUAGE",
+            "TRAILER_RESOLUTION_MIN",
+            "TRAILER_RESOLUTION_MAX",
+            "UPGRADE_TRAILERS",
+            "YT_DLP_CUSTOM_OPTIONS",
+            "SCHEDULE_TYPE",
+            "SCHEDULE_HOURS",
+            "SCHEDULE_CRON",
+            "NEW_ITEM_DETECTION",
+            "NEW_ITEM_DELAY",
+        ):
+            self.assertIn(key, options)
+
+        self.assertNotIn("USE_LABELS", options)
+        self.assertEqual(payload["libraries"]["movie"][0]["name"], "Movies")
 
 
 if __name__ == "__main__":

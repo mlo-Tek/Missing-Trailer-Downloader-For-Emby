@@ -2,3 +2,4 @@ Flask>=3.0,<4
 PyYAML>=6.0,<7
 requests>=2.31,<3
 yt-dlp[default]>=2026.8.19
+croniter>=2,<7

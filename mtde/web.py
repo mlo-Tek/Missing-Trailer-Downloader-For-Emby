@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import os
 import threading
 import time
 
+from croniter import croniter
 from flask import Flask, Response, jsonify, render_template, request, send_file
 import yaml
 
@@ -13,6 +14,30 @@ from . import __version__
 from .config import Settings
 from .emby import EmbyClient
 from .service import MTDE
+
+
+LANGUAGE_OPTIONS = [
+    ("original", "Original"),
+    ("english", "English"),
+    ("german", "German"),
+    ("french", "French"),
+    ("spanish", "Spanish"),
+    ("italian", "Italian"),
+    ("japanese", "Japanese"),
+    ("korean", "Korean"),
+    ("portuguese", "Portuguese"),
+    ("russian", "Russian"),
+    ("chinese", "Chinese"),
+]
+
+RESOLUTION_OPTIONS = [
+    {"value": 480, "label": "480p"},
+    {"value": 576, "label": "576p"},
+    {"value": 720, "label": "720p"},
+    {"value": 1080, "label": "1080p"},
+    {"value": 1440, "label": "1440p"},
+    {"value": 2160, "label": "2160p (4K)"},
+]
 
 
 def create_app(service: MTDE) -> Flask:
@@ -28,9 +53,21 @@ def create_app(service: MTDE) -> Flask:
         "movies": [],
         "cache_at": 0.0,
         "last_refreshed": None,
+        "scheduler_paused": False,
+        "scheduler_next": None,
+        "scheduler_signature": None,
+        "watcher": {
+            "enabled": False,
+            "connected": False,
+            "pending": 0,
+            "error": "",
+        },
     }
     scan_lock = threading.Lock()
     cache_lock = threading.Lock()
+    watcher_seen: set[str] = set()
+    watcher_pending: dict[str, float] = {}
+    watcher_initialized = False
 
     def add_log(line: str) -> None:
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -76,11 +113,97 @@ def create_app(service: MTDE) -> Flask:
         finally:
             state["running"] = False
 
-    def start_scan(download: bool = True):
+    def start_scan(download: bool = True) -> bool:
         if state["running"]:
             return False
         threading.Thread(target=run_scan, args=(download,), daemon=True).start()
         return True
+
+    def schedule_signature() -> tuple:
+        s = service.settings
+        return (s.schedule_type, s.schedule_hours, s.schedule_cron, state["scheduler_paused"])
+
+    def next_scheduled(after: datetime) -> datetime | None:
+        s = service.settings
+        if state["scheduler_paused"] or s.schedule_type == "disabled":
+            return None
+        if s.schedule_type == "hours":
+            return after + timedelta(hours=s.schedule_hours)
+        if s.schedule_type == "cron":
+            return croniter(s.schedule_cron, after).get_next(datetime)
+        return None
+
+    def scheduler_loop() -> None:
+        while True:
+            try:
+                sig = schedule_signature()
+                if sig != state["scheduler_signature"]:
+                    state["scheduler_signature"] = sig
+                    state["scheduler_next"] = next_scheduled(datetime.now())
+                nxt = state["scheduler_next"]
+                if nxt and datetime.now() >= nxt:
+                    if start_scan(True):
+                        add_log("Scheduled scan triggered")
+                    state["scheduler_next"] = next_scheduled(datetime.now())
+            except Exception as exc:
+                add_log(f"ERROR | scheduler: {exc}")
+                state["scheduler_next"] = None
+            time.sleep(1)
+
+    def watcher_loop() -> None:
+        nonlocal watcher_initialized
+        while True:
+            s = service.settings
+            if not s.new_item_detection:
+                state["watcher"] = {
+                    "enabled": False,
+                    "connected": False,
+                    "pending": 0,
+                    "error": "",
+                }
+                watcher_seen.clear()
+                watcher_pending.clear()
+                watcher_initialized = False
+                time.sleep(5)
+                continue
+
+            state["watcher"]["enabled"] = True
+            try:
+                current: set[str] = set()
+                for library in s.movie_libraries:
+                    current.update(movie.id for movie in service.emby.recent_movies(library, limit=50))
+
+                if not watcher_initialized:
+                    watcher_seen.update(current)
+                    watcher_initialized = True
+                else:
+                    now_ts = time.time()
+                    for item_id in current - watcher_seen:
+                        watcher_pending[item_id] = now_ts + s.new_item_delay
+                    watcher_seen.update(current)
+
+                    due = [item_id for item_id, due_at in watcher_pending.items() if due_at <= now_ts]
+                    if due and not state["running"]:
+                        if start_scan(True):
+                            add_log(f"New-item detection triggered scan for {len(due)} new movie(s)")
+                        for item_id in due:
+                            watcher_pending.pop(item_id, None)
+
+                state["watcher"].update({
+                    "connected": True,
+                    "pending": len(watcher_pending),
+                    "error": "",
+                })
+            except Exception as exc:
+                state["watcher"].update({
+                    "connected": False,
+                    "pending": len(watcher_pending),
+                    "error": str(exc),
+                })
+            time.sleep(15)
+
+    threading.Thread(target=scheduler_loop, daemon=True).start()
+    threading.Thread(target=watcher_loop, daemon=True).start()
 
     def patched_index() -> str:
         html = render_template("index.html", version=__version__)
@@ -91,18 +214,26 @@ def create_app(service: MTDE) -> Flask:
         html = html.replace("MTDP", "MTDE")
         html = html.replace("Plex Pass", "Remote Trailer")
         html = html.replace("PLEX_", "EMBY_")
+        html = html.replace("CHECK_EMBY_PASS_TRAILERS", "CHECK_REMOTE_TRAILERS")
         html = html.replace("/api/test/plex", "/api/test/emby")
         html = html.replace("/api/plex/poster/", "/api/emby/poster/")
         html = html.replace("plex_logo.png", "emby_logo.svg")
         html = html.replace("Plex", "Emby")
         html = html.replace(">Run Now</button>", ">Run Scan</button>")
 
+        # The upstream UI injects Plex/MTDfP label maintenance controls into
+        # General. MTDE does not use labels at all, so disable that block.
+        html = html.replace(
+            "if (section === 'General') {",
+            "if (false && section === 'General') {",
+            1,
+        )
+
         extra_css = """
 <style id="mtde-emby-port-overrides">
 a[data-page="tvshows"], #page-tvshows { display:none !important; }
 #section-coverage .donut-card:nth-child(3) { display:none !important; }
 #section-coverage .donut-row { grid-template-columns:1fr 1fr !important; }
-#btn-stop, #btn-start { display:none !important; }
 .mtde-port-note {
     background:rgba(167,139,250,.10);border:1px solid var(--border);
     border-left:3px solid var(--accent);border-radius:var(--radius);
@@ -129,15 +260,19 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
         helper_js = """
 <script>
 (function(){
-  function hideUnsupportedSettings(){
+  function cleanUnsupported(){
     document.querySelectorAll('.settings-section').forEach(section => {
       const h = section.querySelector('h2');
       if (h && h.textContent.trim().startsWith('TV Show Libraries')) section.style.display='none';
     });
+    ['btn-remove-labels','btn-reset-upgrades'].forEach(id => {
+      const el=document.getElementById(id);
+      if (el && el.closest('.setting-item')) el.closest('.setting-item').remove();
+    });
   }
-  const observer = new MutationObserver(hideUnsupportedSettings);
+  const observer = new MutationObserver(cleanUnsupported);
   observer.observe(document.documentElement,{childList:true,subtree:true});
-  hideUnsupportedSettings();
+  cleanUnsupported();
 })();
 </script>
 """
@@ -161,19 +296,21 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
     def status():
         state["dry_run"] = service.settings.dry_run
         state["download_trailers"] = service.settings.download_trailers
-        status_name = "running" if state["running"] else ("error" if state["error_message"] else "idle")
+        status_name = "running" if state["running"] else ("error" if state["error_message"] else ("stopped" if state["scheduler_paused"] else "idle"))
+        nxt = state["scheduler_next"]
+        seconds = max(0, int((nxt - datetime.now()).total_seconds())) if nxt else None
         return jsonify({
             "status": status_name,
             "error_message": state["error_message"],
-            "has_schedule": True,
-            "schedule_type": "manual",
-            "next_run_seconds": None,
-            "next_run_time": None,
+            "has_schedule": service.settings.schedule_type != "disabled",
+            "schedule_type": service.settings.schedule_type,
+            "next_run_seconds": seconds,
+            "next_run_time": nxt.isoformat(timespec="seconds") if nxt else None,
             "last_run_time": state["last_run"],
             "last_refreshed": state["last_refreshed"],
             "dry_run": service.settings.dry_run,
             "download_trailers": service.settings.download_trailers,
-            "watcher": {"enabled": False, "connected": False, "pending": 0},
+            "watcher": dict(state["watcher"]),
             "cache_progress": {"refreshing": False},
             "scan_progress": {"scanning": state["running"]},
         })
@@ -201,10 +338,15 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
 
     @app.post("/api/scheduler/stop")
     def scheduler_stop():
-        return jsonify({"ok": False, "error": "An active MTDE scan cannot be interrupted yet"}), 409
+        state["scheduler_paused"] = True
+        state["scheduler_signature"] = None
+        state["scheduler_next"] = None
+        return jsonify({"ok": True})
 
     @app.post("/api/scheduler/start")
     def scheduler_start():
+        state["scheduler_paused"] = False
+        state["scheduler_signature"] = None
         return jsonify({"ok": True})
 
     @app.get("/api/update")
@@ -212,7 +354,14 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
         return jsonify({"status": "up_to_date", "latest": __version__})
 
     def setting(key: str, label: str, section: str, kind: str, value, description: str = "", **extra):
-        data = {"key": key, "label": label, "section": section, "type": kind, "value": value, "description": description}
+        data = {
+            "key": key,
+            "label": label,
+            "section": section,
+            "type": kind,
+            "value": value,
+            "description": description,
+        }
         data.update(extra)
         return data
 
@@ -220,22 +369,122 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
     def get_settings():
         s = service.settings
         options = [
-            setting("DRY_RUN", "Dry Run", "General", "bool", s.dry_run, "Global safety switch. No media writes, deletions or Emby refreshes."),
-            setting("DOWNLOAD_TRAILERS", "Download Trailers", "General", "bool", s.download_trailers, "Allow automatic/manual trailer downloads when Dry Run is off."),
+            setting(
+                "DRY_RUN", "Dry Run", "General", "bool", s.dry_run,
+                "Global safety switch. No trailer writes/deletions and no Emby refreshes.",
+            ),
+
             setting("EMBY_URL", "Emby URL", "Emby Connection", "string", s.emby_url),
             setting("EMBY_API_KEY", "Emby API Key", "Emby Connection", "string", s.emby_api_key, sensitive=True),
-            setting("PREFERRED_LANGUAGE", "Preferred Language", "Trailer Search", "string", s.preferred_language),
-            setting("SEARCH_RESULTS", "Search Results", "Trailer Search", "int", s.search_results),
-            setting("MAX_TRAILER_DURATION", "Max Trailer Duration (seconds)", "Trailer Search", "int", s.max_trailer_duration),
-            setting("TRAILER_RESOLUTION_MIN", "Minimum Resolution", "Output", "int", s.trailer_resolution_min),
-            setting("TRAILER_RESOLUTION_MAX", "Maximum Resolution", "Output", "int", s.trailer_resolution_max),
-            setting("TRAILER_FILE_FORMAT", "Trailer File Format", "Output", "select", s.trailer_file_format,
-                    options=[{"value": "mkv", "label": "MKV"}, {"value": "mp4", "label": "MP4"}]),
-            setting("TRAILER_FOLDER", "Trailer Folder", "Output", "string", s.trailer_folder),
-            setting("REFRESH_EMBY_AFTER_DOWNLOAD", "Refresh Emby After Download", "Advanced", "bool", s.refresh_emby_after_download),
+            setting(
+                "EMBY_TIMEOUT", "Emby Timeout (seconds)", "Emby Connection", "number", s.emby_timeout,
+                "HTTP timeout for Emby API calls.", min=5,
+            ),
+
+            setting(
+                "CHECK_REMOTE_TRAILERS", "Check Remote Trailers", "Trailer Settings", "bool",
+                s.check_remote_trailers,
+                "When enabled, an Emby remote/online trailer counts as covered and MTDE will not download a local trailer.",
+            ),
+            setting(
+                "DOWNLOAD_TRAILERS", "Download Trailers", "Trailer Settings", "bool",
+                s.download_trailers,
+                "Allow automatic and manual local trailer downloads when Dry Run is off.",
+            ),
+            setting(
+                "PREFERRED_LANGUAGE", "Preferred Language", "Trailer Settings", "select",
+                s.preferred_language,
+                "Preferred language terms used for YouTube trailer searches.",
+                options=[{"value": value, "label": label} for value, label in LANGUAGE_OPTIONS],
+            ),
+            setting(
+                "REFRESH_EMBY_AFTER_DOWNLOAD", "Refresh Emby After Download", "Trailer Settings", "bool",
+                s.refresh_emby_after_download,
+                "Refresh only the affected Emby item after a successful trailer download or deletion.",
+            ),
+            setting(
+                "SHOW_YT_DLP_PROGRESS", "Show yt-dlp Progress", "Trailer Settings", "bool",
+                s.show_ytdlp_progress,
+                "Show yt-dlp warnings/progress in the container log.",
+            ),
+            setting(
+                "TRAILER_FILE_FORMAT", "Trailer File Format", "Trailer Settings", "select",
+                s.trailer_file_format,
+                options=[{"value": "mkv", "label": "MKV"}, {"value": "mp4", "label": "MP4"}],
+            ),
+            setting(
+                "TRAILER_RESOLUTION_MAX", "Maximum Trailer Resolution", "Trailer Settings", "select",
+                s.trailer_resolution_max, options=RESOLUTION_OPTIONS,
+            ),
+            setting(
+                "TRAILER_RESOLUTION_MIN", "Minimum Trailer Resolution", "Trailer Settings", "select",
+                s.trailer_resolution_min, options=RESOLUTION_OPTIONS,
+            ),
+            setting(
+                "MAX_TRAILER_DURATION", "Maximum Trailer Duration (seconds)", "Trailer Settings", "number",
+                s.max_trailer_duration, min=1,
+            ),
+            setting(
+                "SEARCH_RESULTS", "YouTube Search Results", "Trailer Settings", "number",
+                s.search_results, "How many results to inspect per search query.", min=1,
+            ),
+            setting(
+                "TRAILER_FOLDER", "Trailer Folder", "Trailer Settings", "string",
+                s.trailer_folder,
+                "Folder name beside the movie file. Existing Trailer/Trailers variants are detected case-insensitively.",
+            ),
+            setting(
+                "COOKIES_FILE", "Cookies File", "Trailer Settings", "string",
+                s.cookies_file or "",
+                "Optional Netscape-format cookies file path, e.g. /cookies/cookies.txt.",
+            ),
+            setting(
+                "UPGRADE_TRAILERS", "Upgrade Low-Resolution Trailers", "Trailer Settings", "select",
+                s.upgrade_trailers,
+                "When enabled, local trailers below the configured minimum resolution are replaced only after a better download succeeds.",
+                options=[
+                    {"value": "off", "label": "Off"},
+                    {"value": "local", "label": "Local trailers"},
+                ],
+            ),
+
+            setting(
+                "YT_DLP_CUSTOM_OPTIONS", "yt-dlp Custom Options", "YT-DLP Custom Options", "string_list",
+                s.yt_dlp_custom_options,
+                "Optional yt-dlp CLI-style options. MTDE blocks options that would override output paths, safety or format selection.",
+            ),
+
+            setting(
+                "SCHEDULE_TYPE", "Schedule Type", "Scheduler", "select", s.schedule_type,
+                "Choose an interval, cron expression, or disable scheduled scans.",
+                options=[
+                    {"value": "hours", "label": "Every X hours"},
+                    {"value": "cron", "label": "Cron expression"},
+                    {"value": "disabled", "label": "Disabled"},
+                ],
+            ),
+            setting(
+                "SCHEDULE_HOURS", "Hours Interval", "Scheduler", "number", s.schedule_hours,
+                "Run every X hours when Schedule Type is Every X hours.", min=1,
+            ),
+            setting(
+                "SCHEDULE_CRON", "Cron Expression", "Scheduler", "string", s.schedule_cron,
+                "Standard 5-field cron expression.",
+            ),
+            setting(
+                "NEW_ITEM_DETECTION", "New Item Detection", "Scheduler", "bool", s.new_item_detection,
+                "Poll Emby for newly added movies and trigger a scan after the configured delay.",
+            ),
+            setting(
+                "NEW_ITEM_DELAY", "Detection Delay (seconds)", "Scheduler", "number", s.new_item_delay,
+                "Wait after detecting a new Emby movie before starting the scan.", min=0,
+            ),
         ]
         libraries = {
-            "movie": [{"name": name, "genres_to_skip": list(s.skip_genres)} for name in s.movie_libraries],
+            "movie": [
+                {"name": name, "genres_to_skip": s.genres_for_library(name)}
+                for name in s.movie_libraries
+            ],
             "tv": [],
         }
         return jsonify({"options": options, "libraries": libraries})
@@ -248,34 +497,49 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
         config_path = Path(os.environ.get("MTDE_CONFIG", "/config/config.yml"))
         try:
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-            for key in (
-                "DRY_RUN", "DOWNLOAD_TRAILERS", "EMBY_URL", "EMBY_API_KEY",
-                "PREFERRED_LANGUAGE", "SEARCH_RESULTS", "MAX_TRAILER_DURATION",
-                "TRAILER_RESOLUTION_MIN", "TRAILER_RESOLUTION_MAX",
-                "TRAILER_FILE_FORMAT", "TRAILER_FOLDER", "REFRESH_EMBY_AFTER_DOWNLOAD",
-            ):
+            allowed = {
+                "DRY_RUN", "EMBY_URL", "EMBY_API_KEY", "EMBY_TIMEOUT",
+                "CHECK_REMOTE_TRAILERS", "DOWNLOAD_TRAILERS", "PREFERRED_LANGUAGE",
+                "REFRESH_EMBY_AFTER_DOWNLOAD", "SHOW_YT_DLP_PROGRESS",
+                "TRAILER_FILE_FORMAT", "TRAILER_RESOLUTION_MIN", "TRAILER_RESOLUTION_MAX",
+                "MAX_TRAILER_DURATION", "SEARCH_RESULTS", "TRAILER_FOLDER", "COOKIES_FILE",
+                "UPGRADE_TRAILERS", "YT_DLP_CUSTOM_OPTIONS", "SCHEDULE_TYPE", "SCHEDULE_HOURS",
+                "SCHEDULE_CRON", "NEW_ITEM_DETECTION", "NEW_ITEM_DELAY",
+            }
+            for key in allowed:
                 if key in options:
                     raw[key] = options[key]
+
             movie_libs = libraries.get("movie") or []
-            names = [str(x.get("name") or "").strip() for x in movie_libs if str(x.get("name") or "").strip()]
-            if names:
-                raw["MOVIE_LIBRARIES"] = names
-            genres: list[str] = []
+            normalized_libs = []
             for lib in movie_libs:
-                for genre in lib.get("genres_to_skip") or []:
-                    genre = str(genre).strip()
-                    if genre and genre not in genres:
-                        genres.append(genre)
-            raw["SKIP_GENRES"] = genres
+                name = str(lib.get("name") or "").strip()
+                if not name:
+                    continue
+                normalized_libs.append({
+                    "name": name,
+                    "genres_to_skip": [
+                        str(genre).strip()
+                        for genre in (lib.get("genres_to_skip") or [])
+                        if str(genre).strip()
+                    ],
+                })
+            if normalized_libs:
+                raw["MOVIE_LIBRARIES"] = normalized_libs
+            raw.pop("SKIP_GENRES", None)
 
             tmp = config_path.with_suffix(config_path.suffix + ".tmp")
-            tmp.write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True), encoding="utf-8")
+            tmp.write_text(
+                yaml.safe_dump(raw, sort_keys=False, allow_unicode=True),
+                encoding="utf-8",
+            )
             new_settings = Settings.from_yaml(tmp)
             tmp.replace(config_path)
             service.update_settings(new_settings)
             state["dry_run"] = new_settings.dry_run
             state["download_trailers"] = new_settings.download_trailers
             state["error_message"] = ""
+            state["scheduler_signature"] = None
             invalidate_cache()
             add_log("Settings saved and reloaded")
             return jsonify({"ok": True})
@@ -287,9 +551,13 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
         payload = request.get_json(silent=True) or {}
         url = str(payload.get("EMBY_URL") or service.settings.emby_url)
         key = str(payload.get("EMBY_API_KEY") or service.settings.emby_api_key)
+        timeout = int(payload.get("EMBY_TIMEOUT") or service.settings.emby_timeout)
         try:
-            info = EmbyClient(url, key).system_info()
-            return jsonify({"success": True, "message": f"Connected to {info.get('ServerName', 'Emby')} {info.get('Version', '')}"})
+            info = EmbyClient(url, key, timeout=timeout).system_info()
+            return jsonify({
+                "success": True,
+                "message": f"Connected to {info.get('ServerName', 'Emby')} {info.get('Version', '')}",
+            })
         except Exception as exc:
             return jsonify({"success": False, "message": str(exc)}), 400
 
@@ -303,7 +571,10 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
                 items.sort(key=lambda x: x.get("dateAdded") or "", reverse=True)
             else:
                 items.sort(key=lambda x: (x.get("title") or "").casefold())
-            genres = {name: list(service.settings.skip_genres) for name in service.settings.movie_libraries}
+            genres = {
+                name: service.settings.genres_for_library(name)
+                for name in service.settings.movie_libraries
+            }
             return jsonify({"loading": False, "items": items, "genresToSkip": genres})
         except Exception as exc:
             add_log(f"ERROR | library load failed: {exc}")
@@ -336,21 +607,21 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
         title = str(payload.get("title") or "").strip()
         year = payload.get("year")
         if not title:
-            return jsonify({"results": [], "has_more": False})
+            return jsonify({"results": [], "has_more": False, "error": "title is required"}), 400
         try:
             candidates = service.downloader.search(title, int(year) if str(year).isdigit() else None)
             results = []
-            for c in candidates:
-                duration = c.duration or 0
-                mins, secs = divmod(duration, 60)
+            for candidate in candidates:
+                duration = candidate.duration or 0
                 results.append({
-                    "url": c.url,
-                    "title": c.title,
-                    "channel": c.channel or "",
-                    "duration_str": f"{mins}:{secs:02d}" if duration else "",
-                    "resolution": f"{c.height}p" if c.height else "",
-                    "thumbnail": c.thumbnail or "",
-                    "view_count": c.view_count or 0,
+                    "url": candidate.url,
+                    "title": candidate.title,
+                    "duration": candidate.duration,
+                    "duration_str": f"{duration // 60}:{duration % 60:02d}" if candidate.duration is not None else "",
+                    "channel": candidate.channel or "",
+                    "thumbnail": candidate.thumbnail or "",
+                    "resolution": f"{candidate.height}p" if candidate.height else "",
+                    "view_count": candidate.view_count or 0,
                 })
             return jsonify({"results": results, "has_more": False})
         except Exception as exc:
@@ -362,9 +633,14 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
         item_id = str(payload.get("ratingKey") or "")
         url = str(payload.get("url") or "")
         if not item_id or not url:
-            return jsonify({"ok": False, "error": "Missing Emby item id or trailer URL"}), 400
+            return jsonify({"ok": False, "error": "ratingKey and url are required"}), 400
         try:
-            path = service.download_manual(item_id, url, str(payload.get("title") or ""))
+            path = service.download_manual(
+                item_id,
+                url,
+                str(payload.get("title") or ""),
+                ignore_minimum=bool(payload.get("skipQualityMin", False)),
+            )
             invalidate_cache()
             add_log(f"DOWNLOADED | item {item_id} | {path}")
             return jsonify({"ok": True, "path": str(path)})
@@ -375,7 +651,10 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
     def delete_trailer():
         payload = request.get_json(silent=True) or {}
         try:
-            service.delete_local_trailer(str(payload.get("ratingKey") or ""), str(payload.get("trailerFile") or ""))
+            service.delete_local_trailer(
+                str(payload.get("ratingKey") or ""),
+                str(payload.get("trailerFile") or ""),
+            )
             invalidate_cache()
             add_log(f"DELETED | {payload.get('trailerFile')}")
             return jsonify({"ok": True})
@@ -386,9 +665,13 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
     def trailer_stream():
         requested = str(request.args.get("path") or "")
         try:
-            allowed = {str(x.get("trailerFile") or "") for x in load_movies() if x.get("trailerFile")}
+            allowed = {
+                str(item.get("trailerFile") or "")
+                for item in load_movies()
+                if item.get("trailerFile")
+            }
             if requested not in allowed:
-                return jsonify({"error": "Trailer path is not part of the configured Emby libraries"}), 403
+                return Response(status=403)
             path = Path(requested)
             if not path.is_file():
                 return Response(status=404)
@@ -403,14 +686,36 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
         try:
             info = service.test_connection()
             elapsed = int((time.perf_counter() - started) * 1000)
-            services.append({"service": "plex", "name": "Emby", "online": True, "responseTime": elapsed, "version": info.get("Version")})
+            services.append({
+                "service": "plex",
+                "name": "Emby",
+                "online": True,
+                "version": str(info.get("Version") or ""),
+                "responseTime": elapsed,
+            })
         except Exception as exc:
-            services.append({"service": "plex", "name": "Emby", "online": False, "message": str(exc)})
+            services.append({
+                "service": "plex",
+                "name": "Emby",
+                "online": False,
+                "message": str(exc),
+            })
         try:
-            from yt_dlp.version import __version__ as ytdlp_version
-            services.append({"service": "ytdlp", "name": "yt-dlp", "online": True, "version": ytdlp_version, "updateAvailable": False})
+            import yt_dlp
+            services.append({
+                "service": "ytdlp",
+                "name": "yt-dlp",
+                "online": True,
+                "version": yt_dlp.version.__version__,
+                "updateAvailable": False,
+            })
         except Exception as exc:
-            services.append({"service": "ytdlp", "name": "yt-dlp", "online": False, "message": str(exc)})
+            services.append({
+                "service": "ytdlp",
+                "name": "yt-dlp",
+                "online": False,
+                "message": str(exc),
+            })
         return jsonify(services)
 
     def movie_stats():
@@ -436,12 +741,12 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
             _, total, local, remote, missing, skipped, disk = movie_stats()
             return jsonify({
                 "total_movies": total,
-                "total_shows": 0,
                 "movies_local_trailers": local,
                 "movies_plexpass_trailers": remote,
                 "movies_missing_trailers": missing,
                 "movies_skipped_genres": skipped,
                 "movies_disk_bytes": disk,
+                "total_shows": 0,
                 "shows_local_trailers": 0,
                 "shows_plexpass_trailers": 0,
                 "shows_missing_trailers": 0,
@@ -457,19 +762,37 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
             items, _, _, _, _, _, _ = movie_stats()
             libraries = []
             for name in service.settings.movie_libraries:
-                lib_items = [x for x in items if x.get("library") == name]
+                subset = [item for item in items if item.get("library") == name]
                 libraries.append({
                     "name": name,
                     "type": "movie",
-                    "total": len(lib_items),
-                    "local": sum(1 for x in lib_items if x["trailerStatus"] == "local"),
-                    "plexpass": sum(1 for x in lib_items if x["trailerStatus"] == "plexpass"),
-                    "missing": sum(1 for x in lib_items if x["trailerStatus"] == "missing" and not x.get("genreSkipped")),
-                    "skipped": sum(1 for x in lib_items if x.get("genreSkipped")),
+                    "total": len(subset),
+                    "local": sum(1 for x in subset if x["trailerStatus"] == "local"),
+                    "plexpass": sum(1 for x in subset if x["trailerStatus"] == "plexpass"),
+                    "missing": sum(1 for x in subset if x["trailerStatus"] == "missing" and not x.get("genreSkipped")),
+                    "skipped": sum(1 for x in subset if x.get("genreSkipped")),
                 })
-            return jsonify({"resolution": {}, "resolution_plexpass": {}, "language": {}, "libraries": libraries})
+
+            resolution: dict[str, int] = {}
+            for item in items:
+                if item["trailerStatus"] == "local" and item.get("trailerResolution"):
+                    key = item["trailerResolution"]
+                    resolution[key] = resolution.get(key, 0) + 1
+
+            return jsonify({
+                "resolution": resolution,
+                "resolution_plexpass": {},
+                "language": {},
+                "libraries": libraries,
+            })
         except Exception as exc:
-            return jsonify({"error": str(exc), "resolution": {}, "resolution_plexpass": {}, "language": {}, "libraries": []}), 500
+            return jsonify({
+                "error": str(exc),
+                "resolution": {},
+                "resolution_plexpass": {},
+                "language": {},
+                "libraries": [],
+            }), 500
 
     @app.get("/api/dashboard/recent-trailers")
     def recent_trailers():
@@ -484,12 +807,12 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
                 except OSError:
                     continue
                 recent.append((mtime, {
-                    "title": item.get("title"),
+                    "title": item.get("title") or "",
                     "year": item.get("year"),
                     "media_type": "movie",
-                    "downloaded_at": datetime.fromtimestamp(mtime).isoformat(timespec="seconds"),
+                    "downloaded_at": datetime.fromtimestamp(mtime).isoformat(),
                     "plex_rating_key": item.get("ratingKey"),
-                    "poster_url": f"/api/emby/poster/{item.get('ratingKey')}",
+                    "poster_url": "",
                 }))
             recent.sort(key=lambda x: x[0], reverse=True)
             return jsonify({"items": [x[1] for x in recent[:20]]})
@@ -503,8 +826,13 @@ a[data-page="tvshows"], #page-tvshows { display:none !important; }
 
     @app.post("/api/ytdlp/update")
     def ytdlp_update():
-        return jsonify({"ok": False, "error": "Update the MTDE container to update yt-dlp"}), 409
+        return jsonify({
+            "ok": False,
+            "error": "yt-dlp is managed by the MTDE container; update the container image instead.",
+        }), 409
 
+    # Kept only for old cached frontend JavaScript. MTDE does not use labels or
+    # a persisted upgrade-attempt database.
     @app.post("/api/upgrade-attempts/reset")
     def reset_upgrade_attempts():
         return jsonify({"ok": True, "removed": 0})

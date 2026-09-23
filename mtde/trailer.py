@@ -3,11 +3,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import subprocess
 from typing import Any
 
 
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".m4v", ".mov", ".avi", ".webm", ".ts", ".m2ts"}
 LEGACY_TRAILER_FOLDER_NAMES = {"trailer", "trailers"}
+
+_LANGUAGE_SEARCH = {
+    "original": "",
+    "english": "english",
+    "german": "german deutsch",
+    "french": "french français",
+    "spanish": "spanish español",
+    "italian": "italian italiano",
+    "japanese": "japanese",
+    "korean": "korean",
+    "portuguese": "portuguese português",
+    "russian": "russian",
+    "chinese": "chinese",
+}
 
 
 @dataclass
@@ -31,32 +46,64 @@ class TrailerDownloader:
         search_results: int,
         output_format: str,
         cookies_file: str | None = None,
+        show_progress: bool = False,
+        custom_options: list[str] | None = None,
     ):
-        self.preferred_language = preferred_language.strip()
+        self.preferred_language = preferred_language.strip().casefold() or "original"
         self.min_height = min_height
         self.max_height = max_height
         self.max_duration = max_duration
         self.search_results = search_results
         self.output_format = output_format
         self.cookies_file = cookies_file
+        self.show_progress = show_progress
+        self.custom_options = list(custom_options or [])
+
+    @property
+    def language_terms(self) -> str:
+        return _LANGUAGE_SEARCH.get(self.preferred_language, self.preferred_language)
 
     def queries(self, title: str, year: int | None) -> list[str]:
         year_text = f" {year}" if year else ""
-        lang = f" {self.preferred_language}" if self.preferred_language else ""
-        return [
-            f"{title}{year_text} official trailer{lang}".strip(),
-            f"{title}{year_text} trailer{lang}".strip(),
+        lang_text = f" {self.language_terms}" if self.language_terms else ""
+        queries = [
+            f"{title}{year_text} official trailer{lang_text}".strip(),
+            f"{title}{year_text} trailer{lang_text}".strip(),
             f"{title}{year_text} official trailer".strip(),
         ]
+        return list(dict.fromkeys(queries))
+
+    def _custom_opts(self) -> dict[str, Any]:
+        if not self.custom_options:
+            return {}
+        import yt_dlp
+
+        try:
+            parsed = yt_dlp.parse_options(self.custom_options)
+            custom = dict(parsed.ydl_opts or {})
+        except (Exception, SystemExit) as exc:
+            raise ValueError(f"Invalid YT_DLP_CUSTOM_OPTIONS: {exc}") from exc
+
+        # MTDE owns these values because changing them could bypass the configured
+        # media path, format, safety or download behavior.
+        protected = {
+            "outtmpl", "paths", "download_archive", "skip_download",
+            "simulate", "format", "merge_output_format", "cookiefile",
+            "progress_hooks", "postprocessor_hooks",
+        }
+        for key in protected:
+            custom.pop(key, None)
+        return custom
 
     def _common_opts(self) -> dict[str, Any]:
         opts: dict[str, Any] = {
-            "quiet": True,
-            "no_warnings": True,
+            "quiet": not self.show_progress,
+            "no_warnings": not self.show_progress,
             "noplaylist": True,
         }
         if self.cookies_file:
             opts["cookiefile"] = self.cookies_file
+        opts.update(self._custom_opts())
         return opts
 
     def search(self, title: str, year: int | None) -> list[Candidate]:
@@ -64,6 +111,7 @@ class TrailerDownloader:
         found: list[Candidate] = []
         opts = self._common_opts() | {"extract_flat": True, "skip_download": True}
         import yt_dlp
+
         with yt_dlp.YoutubeDL(opts) as ydl:
             for query in self.queries(title, year):
                 data = ydl.extract_info(f"ytsearch{self.search_results}:{query}", download=False) or {}
@@ -74,7 +122,7 @@ class TrailerDownloader:
                     if not url and entry.get("id"):
                         url = f"https://www.youtube.com/watch?v={entry['id']}"
                     url = url or entry.get("url")
-                    if not url or url in seen:
+                    if not url or str(url) in seen:
                         continue
                     seen.add(str(url))
                     duration = entry.get("duration")
@@ -105,7 +153,8 @@ class TrailerDownloader:
             score += 8
         words = [w.casefold() for w in re.findall(r"[\wÀ-ÿ]+", movie_title) if len(w) > 2]
         score += sum(3 for w in words if w in text)
-        for term in language.casefold().split():
+        lang_terms = _LANGUAGE_SEARCH.get(language.casefold(), language.casefold()).split()
+        for term in lang_terms:
             if len(term) > 2 and term in text:
                 score += 7
         if "teaser" in text:
@@ -119,13 +168,19 @@ class TrailerDownloader:
             return None
         return max(candidates, key=lambda c: self._score(c, movie_title, year, self.preferred_language))
 
-    def download(self, candidate: Candidate, output_stem: Path) -> Path:
+    def download(self, candidate: Candidate, output_stem: Path, ignore_minimum: bool = False) -> Path:
         output_stem.parent.mkdir(parents=True, exist_ok=True)
         outtmpl = str(output_stem) + ".%(ext)s"
-        fmt = (
-            f"bestvideo[height<={self.max_height}][height>={self.min_height}]+bestaudio/"
-            f"best[height<={self.max_height}][height>={self.min_height}]"
-        )
+        if ignore_minimum:
+            fmt = (
+                f"bestvideo[height<={self.max_height}]+bestaudio/"
+                f"best[height<={self.max_height}]/best"
+            )
+        else:
+            fmt = (
+                f"bestvideo[height<={self.max_height}][height>={self.min_height}]+bestaudio/"
+                f"best[height<={self.max_height}][height>={self.min_height}]"
+            )
         opts = self._common_opts() | {
             "format": fmt,
             "outtmpl": outtmpl,
@@ -133,6 +188,7 @@ class TrailerDownloader:
             "restrictfilenames": False,
         }
         import yt_dlp
+
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(candidate.url, download=True)
             requested = info.get("requested_downloads") or []
@@ -141,13 +197,38 @@ class TrailerDownloader:
         expected = output_stem.with_suffix("." + self.output_format)
         if expected.exists():
             return expected
-        for p in paths + [prepared]:
-            if p.exists():
-                return p
-        matches = sorted(output_stem.parent.glob(output_stem.name + ".*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for path in paths + [prepared]:
+            if path.exists():
+                return path
+        matches = sorted(
+            output_stem.parent.glob(output_stem.name + ".*"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
         if matches:
             return matches[0]
         raise FileNotFoundError(f"yt-dlp completed but no output file was found for {output_stem}")
+
+
+def probe_video_height(path: str | Path) -> int | None:
+    """Return video height with ffprobe, or None when it cannot be determined."""
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=height", "-of", "csv=p=0", str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return None
+        value = proc.stdout.strip().splitlines()[0]
+        return int(value) if value.isdigit() else None
+    except (OSError, IndexError, ValueError, subprocess.TimeoutExpired):
+        return None
 
 
 def _movie_directory(movie_path: str | Path) -> Path:

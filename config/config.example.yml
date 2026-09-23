@@ -1,42 +1,68 @@
 # Missing Trailer Downloader for Emby (MTDE)
+
 EMBY_URL: "http://emby:8096"
 EMBY_API_KEY: "CHANGE_ME"
+EMBY_TIMEOUT: 120
 
+# Libraries are configured like upstream MTDP, with per-library genre exclusions.
 MOVIE_LIBRARIES:
-  - "Movies"
-  # - "Kids Movies"
+  - name: "Movies"
+    genres_to_skip:
+      - "Short"
+      - "Concert"
+  # - name: "Kids Movies"
+  #   genres_to_skip: []
 
-# Safety switch. Recommended true for the first scan.
-# When true, no trailer files are written and Emby is not refreshed.
+# Global safety switch. Keep this true for the first scan.
+# When true, no trailer files are written/deleted and Emby is not refreshed.
 DRY_RUN: true
 
-# Search/download
+# Trailer behavior
+# false = remote/online Emby trailers do NOT prevent a local trailer download.
+# true  = a remote/online Emby trailer counts as covered.
+CHECK_REMOTE_TRAILERS: false
 DOWNLOAD_TRAILERS: true
-PREFERRED_LANGUAGE: "german deutsch"
+PREFERRED_LANGUAGE: "german"
+REFRESH_EMBY_AFTER_DOWNLOAD: true
+SHOW_YT_DLP_PROGRESS: false
+
 TRAILER_FOLDER: "trailers"
 TRAILER_FILE_FORMAT: "mkv"
 TRAILER_RESOLUTION_MIN: 1080
 TRAILER_RESOLUTION_MAX: 2160
 MAX_TRAILER_DURATION: 300
 SEARCH_RESULTS: 8
-SKIP_GENRES:
-  - "Short"
-  - "Concert"
 
-# Refresh the affected Emby item after a successful local trailer download
-REFRESH_EMBY_AFTER_DOWNLOAD: true
+# off   = keep all existing local trailers
+# local = replace a detected local trailer when its measured resolution is below
+#         TRAILER_RESOLUTION_MIN. The old file is removed only after the better
+#         trailer has downloaded successfully.
+UPGRADE_TRAILERS: "off"
 
-# Web UI
+# Optional yt-dlp CLI-style options. MTDE blocks options that would override its
+# output path, format and safety handling.
+YT_DLP_CUSTOM_OPTIONS: []
+
+# Optional Netscape-format cookies file for yt-dlp.
+# COOKIES_FILE: "/cookies/cookies.txt"
+
+# Scheduler: disabled | hours | cron
+SCHEDULE_TYPE: "disabled"
+SCHEDULE_HOURS: 24
+SCHEDULE_CRON: "0 */6 * * *"
+
+# Emby-native new-item detection uses lightweight polling. The first poll only
+# establishes a baseline; later newly added movies trigger a scan after the delay.
+NEW_ITEM_DETECTION: false
+NEW_ITEM_DELAY: 60
+
 WEB_PORT: 2121
 
-# Reserved for a later internal scheduler. 0 = disabled.
-SCHEDULE_HOURS: 0
+# Prefer mounting media at the same container path in Emby and MTDE. If both see
+# /data/media, leave this empty.
+PATH_MAPPINGS: []
 
-# Optional. Use when paths returned by Emby differ from paths mounted in MTDE.
-# Example: Emby returns /data/media/movies/... while MTDE sees /media/movies/...
-PATH_MAPPINGS:
-  - emby: "/data/media"
-    local: "/media"
-
-# Optional Netscape-format cookies file for yt-dlp
-# COOKIES_FILE: "/cookies/cookies.txt"
+# Only needed when Emby and MTDE see the same files at different container paths:
+# PATH_MAPPINGS:
+#   - emby: "/data/media"
+#     local: "/media"

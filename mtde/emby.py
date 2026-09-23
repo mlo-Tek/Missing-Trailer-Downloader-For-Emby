@@ -20,7 +20,7 @@ class EmbyMovie:
 
 
 class EmbyClient:
-    def __init__(self, base_url: str, api_key: str, timeout: int = 60):
+    def __init__(self, base_url: str, api_key: str, timeout: int = 120):
         root = base_url.rstrip("/")
         self.base_url = root if root.casefold().endswith("/emby") else root + "/emby"
         self.timeout = timeout
@@ -83,16 +83,19 @@ class EmbyClient:
             date_created=str(item.get("DateCreated") or ""),
         )
 
+    @staticmethod
+    def _fields() -> str:
+        return "Path,Genres,ProviderIds,LocalTrailerCount,RemoteTrailers,DateCreated"
+
     def iter_movies(self, library_name: str, page_size: int = 500) -> Iterator[EmbyMovie]:
         parent_id = self.resolve_library(library_name)
         start = 0
-        fields = "Path,Genres,ProviderIds,LocalTrailerCount,RemoteTrailers,DateCreated"
         while True:
             params = {
                 "ParentId": parent_id,
                 "Recursive": "true",
                 "IncludeItemTypes": "Movie",
-                "Fields": fields,
+                "Fields": self._fields(),
                 "StartIndex": start,
                 "Limit": page_size,
                 "SortBy": "SortName",
@@ -111,8 +114,33 @@ class EmbyClient:
             if not items or start >= total:
                 break
 
+    def recent_movies(self, library_name: str, limit: int = 50) -> list[EmbyMovie]:
+        parent_id = self.resolve_library(library_name)
+        params = {
+            "ParentId": parent_id,
+            "Recursive": "true",
+            "IncludeItemTypes": "Movie",
+            "Fields": self._fields(),
+            "StartIndex": 0,
+            "Limit": limit,
+            "SortBy": "DateCreated",
+            "SortOrder": "Descending",
+        }
+        r = self.session.get(self._url("Items"), params=params, timeout=self.timeout)
+        r.raise_for_status()
+        return [
+            movie
+            for item in (r.json().get("Items") or [])
+            if (movie := self._movie_from_item(item)).path
+        ]
+
     def get_item(self, item_id: str) -> dict[str, Any]:
-        params = {"Fields": "Path,Genres,ProviderIds,LocalTrailerCount,RemoteTrailers,DateCreated,Overview,OfficialRating,CommunityRating,RunTimeTicks,Studios,People"}
+        params = {
+            "Fields": (
+                "Path,Genres,ProviderIds,LocalTrailerCount,RemoteTrailers,DateCreated,"
+                "Overview,OfficialRating,CommunityRating,RunTimeTicks,Studios,People"
+            )
+        }
         r = self.session.get(self._url(f"Items/{item_id}"), params=params, timeout=self.timeout)
         r.raise_for_status()
         return r.json()
@@ -139,5 +167,10 @@ class EmbyClient:
             "ReplaceAllMetadata": "false",
             "ReplaceAllImages": "false",
         }
-        r = self.session.post(self._url(f"Items/{item_id}/Refresh"), params=params, json={}, timeout=self.timeout)
+        r = self.session.post(
+            self._url(f"Items/{item_id}/Refresh"),
+            params=params,
+            json={},
+            timeout=self.timeout,
+        )
         r.raise_for_status()

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0
+
+Bring the restored MTDP settings experience in line with the Emby-native backend.
+
+- Remove stale Plex/MTDfP label controls from the Web UI; MTDE does not use Plex or MTDfP labels
+- Remove the stale Reset Upgrade History control; MTDE has no persisted MTDfP upgrade-attempt database
+- Restore/adapt the main upstream settings groups for Emby instead of exposing a reduced two-setting page
+- Add Emby API timeout setting
+- Add `CHECK_REMOTE_TRAILERS` so users can choose whether Emby remote trailers count as covered
+- Add preferred-language selector, yt-dlp progress toggle, cookies path and protected custom yt-dlp options
+- Add per-library genre exclusions using upstream-style movie library entries
+- Add real hours/cron scheduling
+- Add Emby-native new-item detection through lightweight polling and configurable delay
+- Add `UPGRADE_TRAILERS: local` to safely replace local trailers below the configured minimum resolution
+- Keep the old trailer until a replacement download succeeds
+- Measure local trailer resolution with ffprobe for UI statistics/upgrades
+- Keep legacy `Trailer` / `Trailers` detection case-insensitive and Dry Run non-writing
+- Preserve compatibility with early MTDE flat `MOVIE_LIBRARIES` / `SKIP_GENRES` configs
+- Keep the project AI-assisted / vibe-coded disclosure in the README
+
 ## 0.2.0
 
 Restore the upstream MTDP Web UI as the basis for the Emby fork.

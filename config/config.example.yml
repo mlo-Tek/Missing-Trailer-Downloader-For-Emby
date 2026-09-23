@@ -31,7 +31,9 @@ TRAILER_FILE_FORMAT: "mkv"
 TRAILER_RESOLUTION_MIN: 1080
 TRAILER_RESOLUTION_MAX: 2160
 MAX_TRAILER_DURATION: 300
-SEARCH_RESULTS: 8
+# Upstream MTDP searches 15 YouTube results per query. MTDE keeps that as the
+# minimum so the Emby port uses the same search depth and matching behavior.
+SEARCH_RESULTS: 15
 
 # Optional Netscape-format cookies file for yt-dlp.
 # Standard Docker/Unraid template path:

@@ -6,8 +6,11 @@ services:
       - "2121:2121"
     volumes:
       - ./config:/config
-      - /path/to/media:/media
-      # - ./cookies:/cookies:ro
+      - /path/to/media:/data/media
+      # Optional yt-dlp cookies file. In config.yml set:
+      # COOKIES_FILE: "/cookies/cookies.txt"
+      # Create ./config/cookies.txt first before enabling this bind mount.
+      # - ./config/cookies.txt:/cookies/cookies.txt:ro
     environment:
       - TZ=Europe/Berlin
       - PUID=99

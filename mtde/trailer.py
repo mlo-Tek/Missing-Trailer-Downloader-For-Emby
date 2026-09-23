@@ -24,6 +24,31 @@ _LANGUAGE_SEARCH = {
     "chinese": "chinese",
 }
 
+_TITLE_STOPWORDS = {
+    "a", "an", "and", "auf", "auch", "by", "das", "de", "del", "der", "des",
+    "die", "ein", "eine", "einer", "eines", "for", "für", "im", "in", "la",
+    "le", "mit", "of", "oder", "on", "the", "und", "von", "zu", "zum", "zur",
+}
+
+_REJECT_PATTERNS = [
+    r"\b24\s*hours?\b",
+    r"\bhours\+\b",
+    r"\blive\b",
+    r"\bfull\s+episodes?\b",
+    r"\bepisodes?\b",
+    r"\btheme\b",
+    r"\bcover\b",
+    r"\bfan\s*trailer\b",
+    r"\bconcept\b",
+    r"\breaction\b",
+    r"\breview\b",
+    r"\bexplained\b",
+    r"\berklärungsvideo\b",
+    r"\bwerbung\b",
+    r"\bkinderlieder?\b",
+    r"\bmitsingen\b",
+]
+
 
 @dataclass
 class Candidate:
@@ -158,10 +183,61 @@ class TrailerDownloader:
         return found
 
     @staticmethod
+    def _tokens(text: str) -> list[str]:
+        tokens: list[str] = []
+        for token in re.findall(r"[\wÀ-ÿ]+", text.casefold()):
+            if token in _TITLE_STOPWORDS:
+                continue
+            if token.isdigit() or len(token) > 2:
+                tokens.append(token)
+        return tokens
+
+    @classmethod
+    def _title_match_ratio(cls, candidate_title: str, movie_title: str) -> float:
+        movie_tokens = cls._tokens(movie_title)
+        if not movie_tokens:
+            return 0.0
+        candidate_tokens = set(cls._tokens(candidate_title))
+        if not candidate_tokens:
+            return 0.0
+        digit_tokens = {token for token in movie_tokens if token.isdigit()}
+        if digit_tokens and not digit_tokens.issubset(candidate_tokens):
+            return 0.0
+        return len(set(movie_tokens) & candidate_tokens) / len(set(movie_tokens))
+
+    @classmethod
+    def is_safe_candidate(cls, candidate: Candidate, movie_title: str, year: int | None) -> bool:
+        text = candidate.title.casefold()
+        if any(re.search(pattern, text) for pattern in _REJECT_PATTERNS):
+            return False
+
+        years = {int(match) for match in re.findall(r"\b(19\d{2}|20\d{2})\b", text)}
+        if year and years and year not in years:
+            return False
+
+        # Main guard: the candidate must meaningfully contain the requested movie
+        # title. This intentionally skips weak franchise-only matches instead of
+        # downloading a wrong sequel, live stream, theme, cover or unrelated clip.
+        ratio = cls._title_match_ratio(candidate.title, movie_title)
+        if ratio >= 0.50:
+            return True
+
+        # Some libraries keep bilingual titles separated by dash/colon. Accept a
+        # unique two-word segment when it is fully present, but do not use this to
+        # accept one-word franchise-only matches such as only "Asterix" or "Zogg".
+        for segment in re.split(r"\s[-:–—]\s", movie_title):
+            segment_tokens = cls._tokens(segment)
+            if len(segment_tokens) >= 2:
+                segment_ratio = cls._title_match_ratio(candidate.title, segment)
+                if segment_ratio >= 0.90:
+                    return True
+        return False
+
+    @staticmethod
     def _score(candidate: Candidate, movie_title: str, year: int | None, language: str) -> int:
         text = candidate.title.casefold()
         score = 0
-        if "official" in text:
+        if "official" in text or "offiziell" in text:
             score += 30
         if "trailer" in text:
             score += 20
@@ -177,12 +253,18 @@ class TrailerDownloader:
             score -= 8
         if "reaction" in text or "review" in text:
             score -= 25
+        if "theme" in text or "cover" in text or "fan trailer" in text:
+            score -= 40
         return score
 
     def choose(self, candidates: list[Candidate], movie_title: str, year: int | None) -> Candidate | None:
-        if not candidates:
+        safe_candidates = [
+            candidate for candidate in candidates
+            if self.is_safe_candidate(candidate, movie_title, year)
+        ]
+        if not safe_candidates:
             return None
-        return max(candidates, key=lambda c: self._score(c, movie_title, year, self.preferred_language))
+        return max(safe_candidates, key=lambda c: self._score(c, movie_title, year, self.preferred_language))
 
     def download(self, candidate: Candidate, output_stem: Path, ignore_minimum: bool = False) -> Path:
         output_stem.parent.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,13 @@
 import unittest
 
-from mtde.context_safety import ambiguous_no_year_reason, subtitle_divergence_reason
+from mtde.context_safety import (
+    _CONTEXT,
+    _SafetyContext,
+    ambiguous_no_year_reason,
+    localized_title_ambiguity_reason,
+    subtitle_divergence_reason,
+)
+from mtde.emby import EmbyClient
 from mtde.hardening import candidate_safety_reason
 from mtde.trailer import Candidate, TrailerDownloader
 
@@ -74,6 +81,91 @@ class SelectionSafety0317Tests(unittest.TestCase):
             )
         )
 
+    def test_manhattan_yearless_localized_title_is_rejected_from_original_title(self):
+        reason = localized_title_ambiguity_reason(
+            "Manhattan: Love Story Trailer",
+            "Manhattan Love Story",
+            2002,
+            "Maid in Manhattan",
+            "german",
+        )
+        self.assertIsNotNone(reason)
+        self.assertIn("Maid in Manhattan", reason)
+
+    def test_manhattan_contextual_classifier_rejects_real_observed_candidate(self):
+        token = _CONTEXT.set(
+            _SafetyContext(
+                preferred_language="german",
+                library_movies=(("Manhattan Love Story", 2002),),
+                original_title="Maid in Manhattan",
+            )
+        )
+        try:
+            reason = candidate_safety_reason(
+                "Manhattan: Love Story Trailer",
+                "Manhattan Love Story",
+                2002,
+            )
+        finally:
+            _CONTEXT.reset(token)
+        self.assertIsNotNone(reason)
+        self.assertIn("ambiguous localized title", reason)
+
+    def test_requested_year_or_preferred_language_disambiguates_localized_title(self):
+        self.assertIsNone(
+            localized_title_ambiguity_reason(
+                "Manhattan Love Story 2002 Trailer",
+                "Manhattan Love Story",
+                2002,
+                "Maid in Manhattan",
+                "german",
+            )
+        )
+        self.assertIsNone(
+            localized_title_ambiguity_reason(
+                "Manhattan Love Story Trailer Deutsch",
+                "Manhattan Love Story",
+                2002,
+                "Maid in Manhattan",
+                "german",
+            )
+        )
+
+    def test_unrelated_translation_without_shared_title_token_stays_allowed(self):
+        self.assertIsNone(
+            localized_title_ambiguity_reason(
+                "Flutsch und Weg - Trailer",
+                "Flutsch und weg",
+                2006,
+                "Flushed Away",
+                "german",
+            )
+        )
+
+    def test_appended_localized_subtitle_with_high_original_overlap_stays_allowed(self):
+        self.assertIsNone(
+            localized_title_ambiguity_reason(
+                "Beverly Hills Ninja Die Kampfwurst (Orginal Trailer)",
+                "Beverly Hills Ninja - Die Kampfwurst",
+                1997,
+                "Beverly Hills Ninja",
+                "german",
+            )
+        )
+
+    def test_emby_movie_fields_include_original_title(self):
+        self.assertIn("OriginalTitle", EmbyClient._fields())
+        movie = EmbyClient._movie_from_item(
+            {
+                "Id": "1",
+                "Name": "Manhattan Love Story",
+                "OriginalTitle": "Maid in Manhattan",
+                "ProductionYear": 2002,
+                "Path": "/movies/Manhattan Love Story",
+            }
+        )
+        self.assertEqual("Maid in Manhattan", movie.original_title)
+
     def test_yearless_same_title_is_rejected_when_search_proves_other_year(self):
         reason = ambiguous_no_year_reason(
             "Manhattan: Love Story Trailer",
@@ -86,6 +178,19 @@ class SelectionSafety0317Tests(unittest.TestCase):
         )
         self.assertIsNotNone(reason)
         self.assertIn("2014", reason)
+
+    def test_remaster_year_is_not_treated_as_other_production(self):
+        self.assertIsNone(
+            ambiguous_no_year_reason(
+                "Example Movie Trailer",
+                "Example Movie",
+                1988,
+                (
+                    "Example Movie Trailer",
+                    "Example Movie 2014 Remastered Trailer",
+                ),
+            )
+        )
 
     def test_yearless_title_stays_allowed_without_conflicting_year_evidence(self):
         self.assertIsNone(

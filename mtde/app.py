@@ -12,7 +12,7 @@ from .web import create_app as create_base_app
 
 _REFRESH_CSS = r"""
 <style id="mtde-emby-refresh-style">
-#mtde-emby-refresh-launcher{position:fixed;right:22px;bottom:22px;z-index:9997;border:1px solid #7c5ce7;background:#8b6cf0;color:#fff;border-radius:12px;padding:11px 16px;font-weight:700;cursor:pointer;box-shadow:0 8px 28px rgba(0,0,0,.28)}
+#mtde-emby-refresh-launcher{display:none!important}
 #mtde-emby-refresh-modal{display:none;position:fixed;inset:0;z-index:9998;background:rgba(5,4,14,.78);align-items:center;justify-content:center;padding:20px}
 #mtde-emby-refresh-modal.open{display:flex}
 #mtde-emby-refresh-card{width:min(760px,96vw);max-height:90vh;overflow:auto;background:#15112a;border:1px solid #3c2f66;border-radius:16px;padding:22px;color:#eee8ff;box-shadow:0 18px 60px rgba(0,0,0,.55)}
@@ -26,11 +26,17 @@ _REFRESH_CSS = r"""
 #mtde-emby-refresh-results{width:100%;min-height:130px;margin-top:10px;background:#0f0c20;color:#eee8ff;border:1px solid #40336b;border-radius:9px;padding:7px}
 #mtde-emby-refresh-status{margin-top:14px;padding:10px 12px;border-radius:9px;background:#0f0c20;color:#bcb2d8;white-space:pre-wrap}
 .mtde-emby-refresh-note{font-size:13px;color:#8f86aa}
+#mtde-emby-toolbar-btn{white-space:nowrap}
+.mtde-detail-emby-refresh{margin-top:12px}
+@media(max-width:700px){
+  #mtde-emby-refresh-card{padding:16px}
+  .mtde-emby-refresh-row input,.mtde-emby-refresh-row select{min-width:100%;width:100%}
+  #mtde-emby-toolbar-btn{margin-left:0!important}
+}
 </style>
 """
 
 _REFRESH_HTML = r"""
-<button id="mtde-emby-refresh-launcher" type="button">Emby Refresh</button>
 <div id="mtde-emby-refresh-modal" aria-hidden="true">
   <div id="mtde-emby-refresh-card">
     <button id="mtde-emby-refresh-close" type="button">Schließen</button>
@@ -82,8 +88,17 @@ _REFRESH_JS = r"""
         o.dataset.name=lib.name;
         sel.appendChild(o);
       }
-      if(!sel.options.length){ sel.innerHTML='<option value="">Keine Library gefunden</option>'; }
+      if(!sel.options.length) sel.innerHTML='<option value="">Keine Library gefunden</option>';
     }catch(e){ status('Libraries konnten nicht geladen werden: '+e.message); }
+  }
+  function openRefreshModal(){
+    $('mtde-emby-refresh-modal')?.classList.add('open');
+    $('mtde-emby-refresh-modal')?.setAttribute('aria-hidden','false');
+    loadLibraries();
+  }
+  function closeRefreshModal(){
+    $('mtde-emby-refresh-modal')?.classList.remove('open');
+    $('mtde-emby-refresh-modal')?.setAttribute('aria-hidden','true');
   }
   async function searchItems(){
     const q=($('mtde-emby-item-search').value||'').trim();
@@ -112,32 +127,105 @@ _REFRESH_JS = r"""
     try{
       await jsonFetch('/api/emby/refresh/library',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({library_id:sel.value,library_name:name})});
       status(`Library-Refresh für „${name}“ wurde gestartet. Emby verarbeitet den Scan im Hintergrund.`);
-      setTimeout(()=>fetch('/api/library/movies?refresh=true').catch(()=>{}),2000);
     }catch(e){ status('Library-Refresh fehlgeschlagen: '+e.message); }
   }
-  async function refreshItem(){
+  async function refreshItemById(itemId, recursive=false, label='Element'){
+    const data=await jsonFetch('/api/emby/refresh/item',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({item_id:String(itemId),recursive})});
+    if(window.showToast) showToast(`Emby-Refresh gestartet: ${data.name||label}`, 'success');
+    return data;
+  }
+  async function refreshSelectedItem(){
     const sel=$('mtde-emby-refresh-results');
     const opt=sel.selectedOptions[0];
     if(!opt){ status('Bitte zuerst einen Film oder eine Serie auswählen.'); return; }
     const recursive=(opt.dataset.type||'').toLowerCase()==='series';
     status(`Refresh für „${opt.textContent}“ wird an Emby gesendet …`);
     try{
-      const data=await jsonFetch('/api/emby/refresh/item',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({item_id:opt.value,recursive})});
+      const data=await refreshItemById(opt.value,recursive,opt.textContent);
       status(`Emby-Refresh gestartet: ${data.name||opt.textContent}. ${recursive?'Serie inkl. untergeordneter Inhalte.':'Nur dieses Element.'}`);
-      setTimeout(()=>fetch('/api/library/movies?refresh=true').catch(()=>{}),1500);
     }catch(e){ status('Item-Refresh fehlgeschlagen: '+e.message); }
   }
+  function installToolbarButton(){
+    if($('mtde-emby-toolbar-btn')) return;
+    const toolbar=document.querySelector('#page-movies .library-toolbar');
+    if(!toolbar) return;
+    const normalRefresh=toolbar.querySelector('button[onclick*="refreshMovies"]');
+    const btn=document.createElement('button');
+    btn.id='mtde-emby-toolbar-btn';
+    btn.type='button';
+    btn.className='btn btn-sm';
+    btn.textContent='Emby Refresh';
+    btn.title='Emby-Library oder einzelnes Element aktualisieren';
+    btn.style.cssText='margin-left:8px;padding:4px 10px;font-size:12px;';
+    btn.addEventListener('click',openRefreshModal);
+    if(normalRefresh) normalRefresh.insertAdjacentElement('afterend',btn); else toolbar.appendChild(btn);
+  }
+
+  // Replace the generic upstream detail error with the actual API error and add
+  // a one-click Emby refresh for the currently opened movie.
+  window.openDetail = async function(ratingKey){
+    const modal=$('detail-modal');
+    const content=$('detail-content');
+    content.innerHTML='<div class="library-loading"><span class="spinner"></span> Loading...</div>';
+    modal.classList.add('show');
+    try{
+      const res=await apiFetch(`/api/library/item/${ratingKey}`);
+      const item=await res.json().catch(()=>({}));
+      if(!res.ok) throw new Error(item.error || `HTTP ${res.status}`);
+      renderDetail(item);
+      const target=content.querySelector('.detail-right') || content;
+      const btn=document.createElement('button');
+      btn.type='button';
+      btn.className='btn btn-sm mtde-detail-emby-refresh';
+      btn.textContent='In Emby aktualisieren';
+      btn.addEventListener('click',async ev=>{
+        ev.stopPropagation();
+        btn.disabled=true;
+        btn.textContent='Emby aktualisiert …';
+        try{
+          await refreshItemById(ratingKey,false,item.title||'Film');
+          btn.textContent='Refresh gestartet';
+          setTimeout(()=>window.openDetail(ratingKey),1800);
+        }catch(e){
+          btn.disabled=false;
+          btn.textContent='In Emby aktualisieren';
+          if(window.showToast) showToast('Emby-Refresh fehlgeschlagen: '+e.message,'error');
+        }
+      });
+      target.appendChild(btn);
+    }catch(e){
+      content.innerHTML=`<div class="library-empty">Film konnte nicht geladen werden.<br><small>${escapeHtml(e.message||String(e))}</small></div>`;
+    }
+  };
+
+  // The upstream Refresh button only re-requested the 30s server cache. Force
+  // one backend rebuild first, then let the normal renderer consume that cache.
+  window.refreshMovies = async function(){
+    try{
+      const grid=$('movies-grid');
+      if(grid) grid.innerHTML='<div class="library-loading"><span class="spinner"></span> Refreshing movies...</div>';
+      await apiFetch('/api/library/movies?refresh=true');
+      moviesData=[];
+      _moviesLoaded=false;
+      await fetchMovies();
+    }catch(e){
+      if(window.showToast) showToast('Movies refresh failed: '+e.message,'error');
+      fetchMovies();
+    }
+  };
+
   document.addEventListener('click',ev=>{
-    if(ev.target?.id==='mtde-emby-refresh-launcher'){ $('mtde-emby-refresh-modal').classList.add('open'); $('mtde-emby-refresh-modal').setAttribute('aria-hidden','false'); loadLibraries(); }
-    if(ev.target?.id==='mtde-emby-refresh-close' || ev.target?.id==='mtde-emby-refresh-modal'){ $('mtde-emby-refresh-modal').classList.remove('open'); $('mtde-emby-refresh-modal').setAttribute('aria-hidden','true'); }
+    if(ev.target?.id==='mtde-emby-refresh-close' || ev.target?.id==='mtde-emby-refresh-modal') closeRefreshModal();
     if(ev.target?.id==='mtde-emby-library-refresh') refreshLibrary();
     if(ev.target?.id==='mtde-emby-item-search-btn') searchItems();
-    if(ev.target?.id==='mtde-emby-item-refresh') refreshItem();
+    if(ev.target?.id==='mtde-emby-item-refresh') refreshSelectedItem();
   });
   document.addEventListener('keydown',ev=>{
-    if(ev.key==='Escape') $('mtde-emby-refresh-modal')?.classList.remove('open');
+    if(ev.key==='Escape') closeRefreshModal();
     if(ev.key==='Enter' && document.activeElement?.id==='mtde-emby-item-search'){ ev.preventDefault(); searchItems(); }
   });
+  installToolbarButton();
+  new MutationObserver(installToolbarButton).observe(document.body,{childList:true,subtree:true});
 })();
 </script>
 """
@@ -171,8 +259,6 @@ def _tail_log(limit: int) -> list[str]:
 def create_app(service: MTDE) -> Flask:
     app = create_base_app(service)
 
-    # The base WebUI writes the same persistent file. Reading that file for the
-    # Log page also makes manual Emby refresh actions visible immediately.
     if "log" in app.view_functions:
         def persistent_log():
             limit = max(1, min(int(request.args.get("limit", 1000)), 3000))
@@ -256,7 +342,7 @@ def create_app(service: MTDE) -> Flask:
             return response
         try:
             html = response.get_data(as_text=True)
-            if "mtde-emby-refresh-launcher" in html:
+            if "mtde-emby-refresh-script" in html:
                 return response
             html = html.replace("</head>", _REFRESH_CSS + "\n</head>", 1)
             html = html.replace("</body>", _REFRESH_HTML + _REFRESH_JS + "\n</body>", 1)

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 import inspect
+import os
 from pathlib import Path
 import threading
 from typing import Callable, Iterable
@@ -35,6 +37,8 @@ StopCallback = Callable[[], bool]
 class MTDE:
     def __init__(self, settings: Settings):
         self._scan_lock = threading.Lock()
+        self._probe_cache_lock = threading.Lock()
+        self._probe_cache: dict[str, tuple[int, int, int | None]] = {}
         self.update_settings(settings)
 
     def update_settings(self, settings: Settings) -> None:
@@ -72,6 +76,25 @@ class MTDE:
     def _local_files(self, movie: EmbyMovie) -> list[Path]:
         return find_local_trailers(self._mapped_movie_path(movie), self.settings.trailer_folder)
 
+    def _probe_height_cached(self, path: Path) -> int | None:
+        key = str(path)
+        try:
+            stat = path.stat()
+            stamp = int(stat.st_mtime_ns)
+            size = int(stat.st_size)
+        except OSError:
+            return probe_video_height(path)
+
+        with self._probe_cache_lock:
+            cached = self._probe_cache.get(key)
+            if cached and cached[0] == stamp and cached[1] == size:
+                return cached[2]
+
+        height = probe_video_height(path)
+        with self._probe_cache_lock:
+            self._probe_cache[key] = (stamp, size, height)
+        return height
+
     @staticmethod
     def _caller_progress_callback() -> ProgressCallback | None:
         """Best-effort bridge for the Web UI without changing older callers."""
@@ -105,7 +128,7 @@ class MTDE:
             status = "missing"
 
         trailer_file = str(local_files[0]) if local_files else ""
-        height = probe_video_height(local_files[0]) if local_files else None
+        height = self._probe_height_cached(local_files[0]) if local_files else None
         resolution = f"{height}p" if height else ""
 
         return {
@@ -127,10 +150,17 @@ class MTDE:
         }
 
     def list_movies_ui(self, sort: str = "title") -> list[dict]:
-        items: list[dict] = []
+        pairs: list[tuple[str, EmbyMovie]] = []
         for library in self.settings.movie_libraries:
-            for movie in self.emby.iter_movies(library):
-                items.append(self.movie_ui(library, movie))
+            pairs.extend((library, movie) for movie in self.emby.iter_movies(library))
+
+        # ffprobe was previously executed serially for every local trailer. On a
+        # library with hundreds of movies that made the Movies page appear hung.
+        # Probe/build cards concurrently and cache unchanged trailer resolutions.
+        workers = min(12, max(4, (os.cpu_count() or 4)))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mtde-ui") as pool:
+            items = list(pool.map(lambda pair: self.movie_ui(pair[0], pair[1]), pairs))
+
         if sort == "added":
             items.sort(key=lambda x: x.get("dateAdded") or "", reverse=True)
         else:
@@ -210,7 +240,7 @@ class MTDE:
 
         if local_files:
             if self.settings.upgrade_trailers == "local":
-                height = probe_video_height(local_files[0])
+                height = self._probe_height_cached(local_files[0])
                 if height is not None and height < self.settings.trailer_resolution_min:
                     return self._upgrade_movie(library, movie, local_files, height, do_download, progress=progress)
 
@@ -221,13 +251,8 @@ class MTDE:
             if len(local_files) > 1:
                 message_parts.append(f"+{len(local_files) - 1} more")
             result = ScanResult(
-                library,
-                movie.id,
-                movie.name,
-                movie.year,
-                "has_local_trailer",
-                "; ".join(message_parts),
-                str(local_files[0]),
+                library, movie.id, movie.name, movie.year,
+                "has_local_trailer", "; ".join(message_parts), str(local_files[0]),
             )
             self._log(progress, result.status, library, movie.name, result.message)
             return result
@@ -243,12 +268,8 @@ class MTDE:
 
         if self.settings.check_remote_trailers and movie.remote_trailers:
             result = ScanResult(
-                library,
-                movie.id,
-                movie.name,
-                movie.year,
-                "has_remote_trailer",
-                f"Emby reports {len(movie.remote_trailers)} remote trailer(s)",
+                library, movie.id, movie.name, movie.year,
+                "has_remote_trailer", f"Emby reports {len(movie.remote_trailers)} remote trailer(s)",
             )
             self._log(progress, result.status, library, movie.name, result.message)
             return result
@@ -270,36 +291,40 @@ class MTDE:
             self._log(progress, "searching", library, movie.name, query_hint)
             candidates = self.downloader.search(movie.name, movie.year)
             self._log(progress, "search_results", library, movie.name, f"{len(candidates)} candidate(s)")
-            chosen = self.downloader.choose(candidates, movie.name, movie.year)
-            if not chosen:
+            ranked = self.downloader.ranked_candidates(candidates, movie.name, movie.year)
+            if not ranked:
                 result = ScanResult(library, movie.id, movie.name, movie.year, "no_match")
                 self._log(progress, result.status, library, movie.name)
                 return result
+
+            chosen = ranked[0]
             self._log(progress, "match", library, movie.name, chosen.title)
             if not do_download:
-                result = ScanResult(
-                    library,
-                    movie.id,
-                    movie.name,
-                    movie.year,
-                    "would_download",
-                    chosen.title,
-                )
+                result = ScanResult(library, movie.id, movie.name, movie.year, "would_download", chosen.title)
                 self._log(progress, result.status, library, movie.name, result.message)
                 return result
 
-            self._log(progress, "downloading", library, movie.name, chosen.title)
-            file_path = self._download_candidate(movie, chosen)
-            result = ScanResult(
-                library,
-                movie.id,
-                movie.name,
-                movie.year,
-                "downloaded",
-                chosen.title,
-                str(file_path),
-            )
-            self._log(progress, result.status, library, movie.name, str(file_path))
+            errors: list[str] = []
+            for index, candidate in enumerate(ranked, start=1):
+                self._log(progress, "downloading", library, movie.name, f"candidate {index}/{len(ranked)}: {candidate.title}")
+                try:
+                    file_path = self._download_candidate(movie, candidate)
+                    result = ScanResult(
+                        library, movie.id, movie.name, movie.year,
+                        "downloaded", candidate.title, str(file_path),
+                    )
+                    self._log(progress, result.status, library, movie.name, str(file_path))
+                    return result
+                except Exception as exc:
+                    errors.append(str(exc))
+                    if index < len(ranked):
+                        self._log(progress, "candidate_failed", library, movie.name, f"{candidate.title} | {exc} | trying next verified candidate")
+
+            message = f"all {len(ranked)} verified candidate(s) failed"
+            if errors:
+                message += f"; last error: {errors[-1]}"
+            result = ScanResult(library, movie.id, movie.name, movie.year, "error", message)
+            self._log(progress, result.status, library, movie.name, result.message)
             return result
         except Exception as exc:
             result = ScanResult(library, movie.id, movie.name, movie.year, "error", str(exc))
@@ -319,52 +344,74 @@ class MTDE:
             self._log(progress, "upgrade_search", library, movie.name, f"existing trailer is {old_height}p")
             candidates = self.downloader.search(movie.name, movie.year)
             self._log(progress, "search_results", library, movie.name, f"{len(candidates)} candidate(s)")
-            chosen = self.downloader.choose(candidates, movie.name, movie.year)
-            if not chosen:
+            ranked = self.downloader.ranked_candidates(candidates, movie.name, movie.year)
+            if not ranked:
                 result = ScanResult(
                     library, movie.id, movie.name, movie.year,
-                    "upgrade_no_match", f"existing trailer is {old_height}p",
-                    str(local_files[0]),
+                    "upgrade_no_match", f"existing trailer is {old_height}p", str(local_files[0]),
                 )
                 self._log(progress, result.status, library, movie.name, result.message)
                 return result
+
+            chosen = ranked[0]
             self._log(progress, "upgrade_match", library, movie.name, chosen.title)
             if not do_download:
                 result = ScanResult(
                     library, movie.id, movie.name, movie.year,
-                    "would_upgrade", f"{old_height}p -> {chosen.title}",
-                    str(local_files[0]),
+                    "would_upgrade", f"{old_height}p -> {chosen.title}", str(local_files[0]),
                 )
                 self._log(progress, result.status, library, movie.name, result.message)
                 return result
 
-            trailer_dir = select_trailer_directory(
-                self._mapped_movie_path(movie), self.settings.trailer_folder,
-            )
+            trailer_dir = select_trailer_directory(self._mapped_movie_path(movie), self.settings.trailer_folder)
             temp_stem = trailer_dir / f".mtde-upgrade-{movie.id}"
-            self._log(progress, "upgrade_downloading", library, movie.name, chosen.title)
-            new_file = self.downloader.download(chosen, temp_stem)
-
-            safe_title = "".join(
-                c if c not in '<>:"/\\|?*' else " " for c in movie.name
-            ).strip()
-            year = f" ({movie.year})" if movie.year else ""
-            final_file = trailer_dir / f"{safe_title}{year} - Trailer{new_file.suffix}"
-
-            for old_file in local_files:
+            errors: list[str] = []
+            for index, candidate in enumerate(ranked, start=1):
+                self._log(progress, "upgrade_downloading", library, movie.name, f"candidate {index}/{len(ranked)}: {candidate.title}")
                 try:
-                    old_file.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            new_file.replace(final_file)
+                    new_file = self.downloader.download(candidate, temp_stem)
+                    new_height = self._probe_height_cached(new_file)
+                    if new_height is None or new_height < self.settings.trailer_resolution_min or new_height <= old_height:
+                        try:
+                            new_file.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        raise RuntimeError(
+                            f"downloaded trailer is {new_height or 'unknown'}p; requires >= {self.settings.trailer_resolution_min}p and better than {old_height}p"
+                        )
 
-            if self.settings.refresh_emby_after_download:
-                self.emby.refresh_item(movie.id)
+                    safe_title = "".join(c if c not in '<>:"/\\|?*' else " " for c in movie.name).strip()
+                    year = f" ({movie.year})" if movie.year else ""
+                    final_file = trailer_dir / f"{safe_title}{year} - Trailer{new_file.suffix}"
+
+                    for old_file in local_files:
+                        try:
+                            old_file.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    new_file.replace(final_file)
+
+                    if self.settings.refresh_emby_after_download:
+                        self.emby.refresh_item(movie.id)
+                    result = ScanResult(
+                        library, movie.id, movie.name, movie.year,
+                        "upgraded", f"{old_height}p -> {new_height}p | {candidate.title}", str(final_file),
+                    )
+                    self._log(progress, result.status, library, movie.name, str(final_file))
+                    return result
+                except Exception as exc:
+                    errors.append(str(exc))
+                    if index < len(ranked):
+                        self._log(progress, "candidate_failed", library, movie.name, f"{candidate.title} | {exc} | trying next verified candidate")
+
+            message = f"all {len(ranked)} verified upgrade candidate(s) failed"
+            if errors:
+                message += f"; last error: {errors[-1]}"
             result = ScanResult(
                 library, movie.id, movie.name, movie.year,
-                "upgraded", f"{old_height}p -> {chosen.title}", str(final_file),
+                "upgrade_error", message, str(local_files[0]),
             )
-            self._log(progress, result.status, library, movie.name, str(final_file))
+            self._log(progress, result.status, library, movie.name, result.message)
             return result
         except Exception as exc:
             result = ScanResult(
@@ -385,9 +432,7 @@ class MTDE:
         safe_title = "".join(c if c not in '<>:"/\\|?*' else " " for c in movie.name).strip()
         year = f" ({movie.year})" if movie.year else ""
         output_stem = trailer_dir / f"{safe_title}{year} - Trailer"
-        file_path = self.downloader.download(
-            candidate, output_stem, ignore_minimum=ignore_minimum,
-        )
+        file_path = self.downloader.download(candidate, output_stem, ignore_minimum=ignore_minimum)
         if self.settings.refresh_emby_after_download:
             self.emby.refresh_item(movie.id)
         return file_path
@@ -423,9 +468,7 @@ class MTDE:
         allowed = {p.resolve() for p in self._local_files(movie)}
         target = Path(requested_path).resolve()
         if target not in allowed:
-            raise PermissionError(
-                "Requested file is not a detected local trailer for this Emby item"
-            )
+            raise PermissionError("Requested file is not a detected local trailer for this Emby item")
         target.unlink()
         if self.settings.refresh_emby_after_download:
             self.emby.refresh_item(movie.id)

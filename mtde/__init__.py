@@ -1,4 +1,4 @@
-__version__ = "0.3.16"
+__version__ = "0.3.17"
 
 # Install the narrow MTDE safety layer before service.py imports trailer helpers.
 # This keeps the upstream MTDP matcher as the base while filtering only the
@@ -24,9 +24,9 @@ from .auto_repair import install_auto_repair
 
 install_auto_repair()
 
-# Add the contextual guards after auto-repair is installed so both historical
-# repair classification and replacement searches see the same library-aware
-# and preferred-language-aware safety rules.
+# Add the contextual guards after auto-repair is installed so historical repair,
+# replacement searches, subtitle validation and candidate-set ambiguity checks
+# all share the same safety stack.
 from .context_safety import install_contextual_safety
 
 install_contextual_safety()

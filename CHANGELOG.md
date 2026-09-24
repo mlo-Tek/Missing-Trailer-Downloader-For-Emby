@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.11
+
+Fix issues found during the first full real-run and improve the Movies UI.
+
+- Try the next verified MTDP-style YouTube candidate when the first result is unavailable, blocked, or has no format within the configured resolution range
+- Keep the configured minimum resolution intact while falling back; MTDE does not silently download a sub-minimum trailer
+- Reject obvious numbered-sequel mismatches such as `Ice Age` -> `Ice Age 4`, `Kung Fu Panda` -> `Kung Fu Panda 4`, `Nachts im Museum` -> `Nachts im Museum 2`, while still allowing the correctly numbered movie itself
+- Reject narrow non-trailer false positives observed in the real run, including DVD `Hauptmenü` / `Hauptmenu`, German `Alle Trailer` compilations and `1&2` sequel compilations
+- Verify that a low-resolution upgrade replacement is actually at least the configured minimum and better than the existing trailer before removing the old file
+- Fix Emby movie-detail loading by using the API-key-compatible `/Items?Ids=...` query before the direct-item fallback
+- Show the real API error in the movie detail modal instead of only `Failed to load item`
+- Add `In Emby aktualisieren` directly to the movie detail modal
+- Move `Emby Refresh` into the Movies toolbar instead of using a floating mobile overlay button
+- Cache library IDs and trailer-resolution probes, and build movie cards concurrently so the Movies page loads substantially faster
+- Make the normal Movies `Refresh` button force a backend cache rebuild
+
+## 0.3.10
+
+Add Emby-native refresh controls and stop stale Emby trailer metadata from blocking searches.
+
+- Add UI controls to refresh an entire Emby library or one individual movie/series
+- Refresh series recursively while movie refreshes stay item-specific
+- Add `REFRESH_ITEM_*` and `REFRESH_LIBRARY_*` persistent log entries
+- Treat the mapped filesystem as the source of truth for local trailer existence
+- Log `STALE_EMBY_TRAILER_STATE` when Emby still reports `LocalTrailerCount > 0` but no local trailer file exists, then continue normal trailer search
+
 ## 0.3.9
 
 Keep the upstream MTDP matcher as the base while blocking a narrow class of non-trailer clips observed in Dry Run.

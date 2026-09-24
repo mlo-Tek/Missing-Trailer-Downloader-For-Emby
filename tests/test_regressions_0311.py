@@ -8,7 +8,7 @@ from mtde.app import create_app
 from mtde.config import Settings
 from mtde.emby import EmbyClient, EmbyMovie
 from mtde.service import MTDE
-from mtde.trailer import Candidate, TrailerDownloader
+from mtde.trailer import Candidate, TrailerDownloader, is_likely_trailer
 
 
 class MatchingRegressionTests(unittest.TestCase):
@@ -34,16 +34,23 @@ class MatchingRegressionTests(unittest.TestCase):
         self.assertEqual(self.downloader.choose([candidate], "Kung Fu Panda 4", 2024), candidate)
 
     def test_non_trailer_dvd_menu_and_german_compilation_are_rejected(self):
-        cases = [
-            ("Leroy & Stitch", 2006, "Leroy & Stitch (2006) - Hauptmenü (German/Deutsch) (DVD)"),
-            ("Stitch & Co. - Der Film", 2003, "Stitch & Co. - Der Film (2003) - Hauptmenu (German/Deutsch) (DVD)"),
-            ("Vaiana", 2016, "VAIANA - Alle Trailer (deutsch | german) | Disney HD"),
-            ("Lilo & Stitch", 2002, "LILO & STITCH 1&2 - Lieblingsfilm-Trailer | Disney Channel"),
+        # These content-type guards are applied while YouTube search results are
+        # built, before MTDP title verification/scoring runs.
+        blocked_titles = [
+            "Leroy & Stitch (2006) - Hauptmenü (German/Deutsch) (DVD)",
+            "Stitch & Co. - Der Film (2003) - Hauptmenu (German/Deutsch) (DVD)",
+            "VAIANA - Alle Trailer (deutsch | german) | Disney HD",
         ]
-        for title, year, candidate_title in cases:
-            with self.subTest(title=title):
-                candidate = Candidate("x", candidate_title, 120, 1080, None)
-                self.assertIsNone(self.downloader.choose([candidate], title, year))
+        for candidate_title in blocked_titles:
+            with self.subTest(candidate_title=candidate_title):
+                self.assertFalse(is_likely_trailer(candidate_title))
+
+        # Compilation-style numbered sequel conflicts are checked by the title
+        # verifier because the phrase itself can still look like a trailer.
+        candidate = Candidate(
+            "x", "LILO & STITCH 1&2 - Lieblingsfilm-Trailer | Disney Channel", 120, 1080, None
+        )
+        self.assertIsNone(self.downloader.choose([candidate], "Lilo & Stitch", 2002))
 
 
 class DownloadFallbackRegressionTests(unittest.TestCase):

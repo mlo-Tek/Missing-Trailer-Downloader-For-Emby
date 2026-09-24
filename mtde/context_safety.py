@@ -69,7 +69,6 @@ def _meaningful_tokens(text: str) -> set[str]:
         and token not in _SUBTITLE_STOPWORDS
         and token not in _SUBTITLE_NOISE
         and not token.isdigit()
-        and not (len(token) == 4 and token.isdigit())
     }
 
 
@@ -153,7 +152,10 @@ def subtitle_divergence_reason(video_title: str, movie_title: str) -> str | None
     "Stitch völlig von der Rolle - Märchen" false positive without turning
     normal punctuation or release descriptors into destructive mismatches.
     """
-    parts = re.split(r"\s*[-–—:]\s*", movie_title, maxsplit=1)
+    # Require whitespace around dash-like separators so internal title hyphens
+    # such as Spider-Man are never mistaken for the start of a subtitle. Colons
+    # remain valid subtitle separators with or without surrounding whitespace.
+    parts = re.split(r"(?:\s+[-–—]\s+|\s*:\s*)", movie_title, maxsplit=1)
     if len(parts) != 2:
         return None
     base_title, expected_subtitle = (part.strip() for part in parts)

@@ -74,13 +74,7 @@ class MTDE:
 
     @staticmethod
     def _caller_progress_callback() -> ProgressCallback | None:
-        """Best-effort bridge for the Web UI without changing older callers.
-
-        The Flask UI calls MTDE.scan from a nested run_scan() closure where an
-        add_log() function exists. When no explicit callback is passed, use that
-        function so progress is visible live in the Web UI log, not only in
-        container stdout after the scan returns.
-        """
+        """Best-effort bridge for the Web UI without changing older callers."""
         frame = inspect.currentframe()
         try:
             caller = frame.f_back.f_back if frame and frame.f_back else None
@@ -102,7 +96,8 @@ class MTDE:
 
     def movie_ui(self, library: str, movie: EmbyMovie) -> dict:
         local_files = self._local_files(movie)
-        if movie.local_trailer_count > 0 or local_files:
+        stale_emby_local = movie.local_trailer_count > 0 and not local_files
+        if local_files:
             status = "local"
         elif self.settings.check_remote_trailers and movie.remote_trailers:
             status = "plexpass"
@@ -127,6 +122,8 @@ class MTDE:
             "mediaPath": str(self._mapped_movie_path(movie)),
             "type": "movie",
             "dateAdded": movie.date_created,
+            "embyLocalTrailerCount": movie.local_trailer_count,
+            "staleEmbyLocalTrailer": stale_emby_local,
         }
 
     def list_movies_ui(self, sort: str = "title") -> list[dict]:
@@ -211,8 +208,8 @@ class MTDE:
         mapped_movie_path = self._mapped_movie_path(movie)
         local_files = find_local_trailers(mapped_movie_path, self.settings.trailer_folder)
 
-        if movie.local_trailer_count > 0 or local_files:
-            if self.settings.upgrade_trailers == "local" and local_files:
+        if local_files:
+            if self.settings.upgrade_trailers == "local":
                 height = probe_video_height(local_files[0])
                 if height is not None and height < self.settings.trailer_resolution_min:
                     return self._upgrade_movie(library, movie, local_files, height, do_download, progress=progress)
@@ -220,10 +217,9 @@ class MTDE:
             message_parts: list[str] = []
             if movie.local_trailer_count > 0:
                 message_parts.append(f"Emby LocalTrailerCount={movie.local_trailer_count}")
-            if local_files:
-                message_parts.append(f"local file: {local_files[0]}")
-                if len(local_files) > 1:
-                    message_parts.append(f"+{len(local_files) - 1} more")
+            message_parts.append(f"local file: {local_files[0]}")
+            if len(local_files) > 1:
+                message_parts.append(f"+{len(local_files) - 1} more")
             result = ScanResult(
                 library,
                 movie.id,
@@ -231,10 +227,19 @@ class MTDE:
                 movie.year,
                 "has_local_trailer",
                 "; ".join(message_parts),
-                str(local_files[0]) if local_files else None,
+                str(local_files[0]),
             )
             self._log(progress, result.status, library, movie.name, result.message)
             return result
+
+        if movie.local_trailer_count > 0:
+            self._log(
+                progress,
+                "stale_emby_trailer_state",
+                library,
+                movie.name,
+                f"Emby LocalTrailerCount={movie.local_trailer_count}, but no local trailer file exists on the mapped media path; continuing with normal search",
+            )
 
         if self.settings.check_remote_trailers and movie.remote_trailers:
             result = ScanResult(
@@ -400,10 +405,8 @@ class MTDE:
             raise RuntimeError("DOWNLOAD_TRAILERS is disabled")
         movie = self.emby.get_movie(item_id)
         existing = self._local_files(movie)
-        if movie.local_trailer_count > 0 or existing:
-            if existing:
-                return existing[0]
-            raise RuntimeError("Emby already reports a local trailer for this movie")
+        if existing:
+            return existing[0]
         candidate = Candidate(
             url=url,
             title=result_title or movie.name,

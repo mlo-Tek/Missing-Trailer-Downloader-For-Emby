@@ -5,9 +5,9 @@ import json
 import os
 import sys
 
+from .app import create_app
 from .config import Settings
 from .service import MTDE
-from .web import create_app
 
 
 def main() -> int:

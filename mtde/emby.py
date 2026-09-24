@@ -154,6 +154,40 @@ class EmbyClient:
             raise KeyError(f"Emby movie has no path: {item_id}")
         return movie
 
+    def search_items(
+        self,
+        query: str,
+        include_types: tuple[str, ...] = ("Movie", "Series"),
+        limit: int = 25,
+    ) -> list[dict[str, Any]]:
+        term = query.strip()
+        if not term:
+            return []
+        params = {
+            "Recursive": "true",
+            "SearchTerm": term,
+            "IncludeItemTypes": ",".join(include_types),
+            "Fields": "Path,ProductionYear,LocalTrailerCount",
+            "Limit": max(1, min(int(limit), 100)),
+            "SortBy": "SortName",
+            "SortOrder": "Ascending",
+        }
+        r = self.session.get(self._url("Items"), params=params, timeout=self.timeout)
+        r.raise_for_status()
+        items = r.json().get("Items") or []
+        return [
+            {
+                "id": str(item.get("Id") or ""),
+                "name": str(item.get("Name") or "Unknown"),
+                "type": str(item.get("Type") or ""),
+                "year": item.get("ProductionYear"),
+                "path": str(item.get("Path") or ""),
+                "local_trailer_count": int(item.get("LocalTrailerCount") or 0),
+            }
+            for item in items
+            if item.get("Id")
+        ]
+
     def fetch_primary_image(self, item_id: str, max_width: int = 600) -> requests.Response:
         return self.session.get(
             self._url(f"Items/{item_id}/Images/Primary"),
@@ -161,9 +195,9 @@ class EmbyClient:
             timeout=self.timeout,
         )
 
-    def refresh_item(self, item_id: str) -> None:
+    def refresh_item(self, item_id: str, recursive: bool = False) -> None:
         params = {
-            "Recursive": "false",
+            "Recursive": "true" if recursive else "false",
             "MetadataRefreshMode": "Default",
             "ImageRefreshMode": "Default",
             "ReplaceAllMetadata": "false",
@@ -176,3 +210,8 @@ class EmbyClient:
             timeout=self.timeout,
         )
         r.raise_for_status()
+
+    def refresh_library(self, library: str) -> str:
+        item_id = self.resolve_library(library)
+        self.refresh_item(item_id, recursive=True)
+        return item_id

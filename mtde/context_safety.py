@@ -308,9 +308,10 @@ def install_contextual_safety() -> None:
     """Add library/language and candidate-set-aware safety to MTDE scans.
 
     The existing MTDP-style matcher and all earlier MTDE safety rules remain the
-    base. This layer only supplies context that the candidate matcher otherwise
-    does not have and rejects high-confidence ambiguity classes observed in real
-    dry runs.
+    base. The 0.3.16 contextual rules are also used for proven-history repair.
+    The newer 0.3.17 subtitle/original-title/candidate-set heuristics are kept
+    selection-only so they can prevent questionable new downloads without ever
+    becoming grounds for deleting an existing trailer automatically.
     """
     from . import auto_repair as auto_repair_module
     from . import emby as emby_module
@@ -331,23 +332,9 @@ def install_contextual_safety() -> None:
         if reason:
             return reason
 
-        reason = subtitle_divergence_reason(video_title, movie_title)
-        if reason:
-            return reason
-
         context = _CONTEXT.get()
         if context is None:
             return None
-
-        reason = localized_title_ambiguity_reason(
-            video_title,
-            movie_title,
-            year,
-            context.original_title,
-            context.preferred_language,
-        )
-        if reason:
-            return reason
 
         reason = explicit_foreign_language_reason(
             video_title,
@@ -367,11 +354,23 @@ def install_contextual_safety() -> None:
     def ranked_candidates_with_ambiguity(self, candidates, movie_title, year):
         ranked = original_ranked_candidates(self, candidates, movie_title, year)
         titles = tuple(candidate.title for candidate in candidates)
-        return [
-            candidate
-            for candidate in ranked
-            if ambiguous_no_year_reason(candidate.title, movie_title, year, titles) is None
-        ]
+        context = _CONTEXT.get()
+        filtered = []
+        for candidate in ranked:
+            if subtitle_divergence_reason(candidate.title, movie_title) is not None:
+                continue
+            if context is not None and localized_title_ambiguity_reason(
+                candidate.title,
+                movie_title,
+                year,
+                context.original_title,
+                context.preferred_language,
+            ) is not None:
+                continue
+            if ambiguous_no_year_reason(candidate.title, movie_title, year, titles) is not None:
+                continue
+            filtered.append(candidate)
+        return filtered
 
     def iter_movies_with_catalog(self, library_name):
         # Materialize the existing Emby result once, then reuse that same list
@@ -393,17 +392,16 @@ def install_contextual_safety() -> None:
             )
         )
         try:
-            # At install time this is the auto-repair wrapper. Keeping the
-            # context active around it means both historical repair checks and
-            # the replacement search use exactly the same contextual rules.
+            # At install time this is the auto-repair wrapper. Keeping context
+            # active lets the 0.3.16 high-confidence repair rules and the 0.3.17
+            # selection-only rules see the same movie metadata.
             return original_process_movie(self, library, movie, do_download, progress=progress)
         finally:
             _CONTEXT.reset(token)
 
     # hardening.ranked_candidates resolves the module attribute at runtime.
     # auto_repair imported the function directly earlier, so update that bound
-    # reference as well; otherwise historical bad downloads would not benefit
-    # from the new library/language/subtitle context on the next scan.
+    # reference for the high-confidence 0.3.16 library/language repair rules.
     hardening.candidate_safety_reason = contextual_reason
     auto_repair_module.candidate_safety_reason = contextual_reason
     trailer_module.TrailerDownloader.ranked_candidates = ranked_candidates_with_ambiguity

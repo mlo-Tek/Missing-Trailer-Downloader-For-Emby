@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.14
+
+Make automatic repair conservative enough for destructive use after reviewing the first full 0.3.13 Dry Run.
+
+- Keep automatic repair enabled during normal scans, but reduce false-positive repair classifications before any real-run deletion can happen
+- Recognize compact legitimate trailer markers such as `GermanTrailer` and `Kinotrailer`
+- Restrict the additional short-title spin-off guard to one- and two-word base titles instead of applying it broadly to longer movie titles
+- Allow common trailer/release descriptors such as `Exklusiv`, `Neuer`, `Extended`, `3D`, `Restaurierung`, `Blu-ray` and separator-style `I`
+- Do not treat publisher text after a movie title as a spin-off when `Trailer`/`Teaser` already appeared before the movie title
+- Preserve high-confidence repairs for Cars -> Cars On The Road, Harry Potter trailer remakes, Kung Fu Panda Synchrontrailer, DVD Hauptmenü, reversed trailers, clip-only/non-trailer matches, soundtrack matches and genuine short-title spin-offs such as Die Croods -> Alles auf Anfang
+- Add regression coverage for the legitimate sources that 0.3.13 incorrectly wanted to repair, including Alles steht Kopf 2, Hoppers, Hotel Transsilvanien, Findet Dorie, Lilo & Stitch, Monster Uni, Schneewittchen, Wild Child and Zoomania 2
+
+## 0.3.13
+
+Automatically repair proven-bad MTDE downloads during the normal movie scan.
+
+- Parse persistent MTDE movie logs once per scan and correlate historical `DOWNLOADING`/`DOWNLOADED` records with the exact local trailer path
+- Before returning `HAS_LOCAL_TRAILER`, classify only trailers with exact MTDE provenance using the current safety layer
+- Dry Run logs `WOULD_REPAIR_SUSPICIOUS_TRAILER` without touching files
+- Real Run deletes only proven-bad MTDE-owned trailer files, refreshes the Emby item and immediately re-enters the normal safe search/download flow
+- Never auto-delete untracked/manual/local trailers merely because their filename or title looks unusual
+- Automatically remove deterministic yt-dlp fragment/intermediate files while keeping the separate MTDE Repair UI available as an audit tool
+
 ## 0.3.12
 
 Harden real-run matching and add safe repair for already downloaded false positives.

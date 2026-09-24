@@ -17,6 +17,7 @@ class EmbyMovie:
     remote_trailers: list[dict[str, Any]]
     provider_ids: dict[str, str]
     date_created: str = ""
+    original_title: str = ""
 
 
 class EmbyClient:
@@ -91,17 +92,18 @@ class EmbyClient:
             remote_trailers=list(item.get("RemoteTrailers") or []),
             provider_ids={str(k): str(v) for k, v in (item.get("ProviderIds") or {}).items()},
             date_created=str(item.get("DateCreated") or ""),
+            original_title=str(item.get("OriginalTitle") or ""),
         )
 
     @staticmethod
     def _fields() -> str:
-        return "Path,Genres,ProviderIds,LocalTrailerCount,RemoteTrailers,DateCreated,ProductionYear"
+        return "Path,Genres,ProviderIds,LocalTrailerCount,RemoteTrailers,DateCreated,ProductionYear,OriginalTitle"
 
     @staticmethod
     def _detail_fields() -> str:
         return (
             "Path,Genres,ProviderIds,LocalTrailerCount,RemoteTrailers,DateCreated,"
-            "ProductionYear,Overview,OfficialRating,CommunityRating,RunTimeTicks,Studios,People"
+            "ProductionYear,OriginalTitle,Overview,OfficialRating,CommunityRating,RunTimeTicks,Studios,People"
         )
 
     def iter_movies(self, library_name: str, page_size: int = 500) -> Iterator[EmbyMovie]:

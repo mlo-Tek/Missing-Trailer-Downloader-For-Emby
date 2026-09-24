@@ -10,6 +10,7 @@ from typing import Iterable
 class _SafetyContext:
     preferred_language: str
     library_movies: tuple[tuple[str, int | None], ...]
+    original_title: str = ""
 
 
 _CONTEXT: ContextVar[_SafetyContext | None] = ContextVar("mtde_candidate_safety_context", default=None)
@@ -70,6 +71,16 @@ def _meaningful_tokens(text: str) -> set[str]:
         and token not in _SUBTITLE_NOISE
         and not token.isdigit()
     }
+
+
+def _has_preferred_language_marker(video_title: str, preferred_language: str) -> bool:
+    preferred = (preferred_language or "").strip().casefold()
+    if not preferred or preferred == "original":
+        return False
+    from .trailer import LANGUAGE_KEYWORDS, _matches_language_keyword
+
+    keywords = LANGUAGE_KEYWORDS.get(preferred, [preferred])
+    return _matches_language_keyword(video_title.casefold(), keywords)
 
 
 def explicit_foreign_language_reason(
@@ -195,6 +206,57 @@ def subtitle_divergence_reason(video_title: str, movie_title: str) -> str | None
     return f"subtitle mismatch: expected '{expected_subtitle}', candidate '{candidate_subtitle}'"
 
 
+def localized_title_ambiguity_reason(
+    video_title: str,
+    movie_title: str,
+    year: int | None,
+    original_title: str,
+    preferred_language: str,
+) -> str | None:
+    """Reject a risky yearless localized-title match using Emby OriginalTitle.
+
+    This does not penalize ordinary translated titles. It only triggers when:
+    * the candidate omits the movie year,
+    * Emby has a substantially different OriginalTitle,
+    * localized and original titles still share at least one meaningful token,
+    * the candidate contains only the localized title (not the OriginalTitle),
+      and
+    * the candidate does not explicitly identify the preferred language.
+
+    That narrow combination catches the 2002 `Manhattan Love Story` movie
+    matching the unrelated 2014 `Manhattan Love Story` TV trailer while leaving
+    titles such as `Flutsch und weg`/`Flushed Away` and appended German
+    subtitles such as `Beverly Hills Ninja - Die Kampfwurst` alone.
+    """
+    if year is None or not original_title or _YEAR_RE.search(video_title):
+        return None
+
+    movie_norm = _normalized(movie_title)
+    original_norm = _normalized(original_title)
+    candidate_norm = _normalized(video_title)
+    if not movie_norm or not original_norm or movie_norm == original_norm:
+        return None
+    if not re.search(r"\b" + re.escape(movie_norm) + r"\b", candidate_norm):
+        return None
+    if re.search(r"\b" + re.escape(original_norm) + r"\b", candidate_norm):
+        return None
+    if _has_preferred_language_marker(video_title, preferred_language):
+        return None
+
+    movie_tokens = _meaningful_tokens(movie_title)
+    original_tokens = _meaningful_tokens(original_title)
+    shared = movie_tokens & original_tokens
+    if not shared:
+        return None
+
+    union = movie_tokens | original_tokens
+    similarity = len(shared) / len(union) if union else 1.0
+    if similarity >= 0.5:
+        return None
+
+    return f"ambiguous localized title without year/original title: OriginalTitle '{original_title}'"
+
+
 def ambiguous_no_year_reason(
     video_title: str,
     movie_title: str,
@@ -227,6 +289,10 @@ def ambiguous_no_year_reason(
             continue
         if not _TRAILER_MARKER_RE.search(other_norm):
             continue
+        # Do not interpret an explicitly advertised remaster/restoration year as
+        # proof of a different production.
+        if any(marker in other_norm for marker in ("remaster", "restored", "restauriert", "restaurierung")):
+            continue
         for raw in _YEAR_RE.findall(other_title):
             other_year = int(raw)
             if abs(other_year - int(year)) > 1:
@@ -243,8 +309,8 @@ def install_contextual_safety() -> None:
 
     The existing MTDP-style matcher and all earlier MTDE safety rules remain the
     base. This layer only supplies context that the candidate matcher otherwise
-    does not have and rejects two high-confidence ambiguity classes observed in
-    real dry runs.
+    does not have and rejects high-confidence ambiguity classes observed in real
+    dry runs.
     """
     from . import auto_repair as auto_repair_module
     from . import emby as emby_module
@@ -272,6 +338,16 @@ def install_contextual_safety() -> None:
         context = _CONTEXT.get()
         if context is None:
             return None
+
+        reason = localized_title_ambiguity_reason(
+            video_title,
+            movie_title,
+            year,
+            context.original_title,
+            context.preferred_language,
+        )
+        if reason:
+            return reason
 
         reason = explicit_foreign_language_reason(
             video_title,
@@ -313,6 +389,7 @@ def install_contextual_safety() -> None:
             _SafetyContext(
                 preferred_language=self.settings.preferred_language,
                 library_movies=tuple(library_movies),
+                original_title=getattr(movie, "original_title", "") or "",
             )
         )
         try:

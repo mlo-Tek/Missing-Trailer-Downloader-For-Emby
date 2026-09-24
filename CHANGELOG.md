@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.12
+
+Harden real-run matching and add safe repair for already downloaded false positives.
+
+- Keep the upstream MTDP matcher/scoring as the base, then apply a narrow MTDE safety layer before automatic downloads
+- Require automatic candidates to explicitly contain `trailer` or `teaser`
+- Reject real-run false positives observed in logs: soundtrack songs, clip-only videos, reversed trailers, trailer remakes, synchronization/voice-cast promos, DVD menus, trailer compilations and full-movie uploads
+- Reject candidate years that differ from the Emby movie year by more than one year when a year is present in the candidate title
+- Add short-title spin-off/subtitle protection for cases such as `Cars` -> `Cars On The Road` and `Die Croods` -> `Die Croods - Alles auf Anfang`
+- Stop treating yt-dlp intermediate files such as `*.f616.mp4`, `*.part`, `.ytdl` and `.mtde-upgrade-*` as finished local trailers
+- Fail/clean up when yt-dlp returns an intermediate format fragment instead of a final merged trailer
+- Add an `MTDE Repair` action in the Movies UI
+- Repair analysis only considers downloads that can be attributed to MTDE through persistent `/config/logs/Movies` logs, plus deterministic yt-dlp fragment files
+- Live repair deletes only those confidently unsafe MTDE files, refreshes the Emby item and immediately searches/downloads a replacement with the hardened matcher
+- If no safe replacement can be downloaded, the movie remains missing rather than keeping the known-wrong trailer
+- Add regression tests for Cars On The Road, König der Löwen soundtrack, Madagascar/Madagascar 2, Toy Story 3 clip, WALL·E scene, Harry Potter trailer remake, Kung Fu Panda Synchrontrailer, Stockmann and yt-dlp fragment files
+
 ## 0.3.11
 
 Fix issues found during the first full real-run and improve the Movies UI.
@@ -149,7 +166,7 @@ Restore the upstream MTDP Web UI as the basis for the Emby fork.
 - Preserve case-insensitive support for existing `Trailer`, `Trailers`, `trailer` and `trailers` directories
 - Add settings editing from the restored Web UI with live config reload
 - Add Emby poster proxy and local trailer playback endpoints
-- Keep the project AI-assisted / vibe-coded disclosure in the README
+- Keep the project AI-assisted / vibe-coded development disclosure in the README
 
 ## 0.1.1
 

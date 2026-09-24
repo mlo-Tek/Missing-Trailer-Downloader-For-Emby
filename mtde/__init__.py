@@ -1,4 +1,4 @@
-__version__ = "0.3.17"
+__version__ = "0.3.18"
 
 # Install the narrow MTDE safety layer before service.py imports trailer helpers.
 # This keeps the upstream MTDP matcher as the base while filtering only the
@@ -30,3 +30,11 @@ install_auto_repair()
 from .context_safety import install_contextual_safety
 
 install_contextual_safety()
+
+# 0.3.18 narrows only the candidate-set year ambiguity heuristic. In 0.3.17 a
+# later sequel such as Kung Fu Panda 4 could make the original Kung Fu Panda
+# trailer look ambiguous solely because both titles share the same base words.
+# Keep this final layer selection-only; it never becomes an auto-delete rule.
+from .ambiguity_refinement import install_ambiguity_refinement
+
+install_ambiguity_refinement()

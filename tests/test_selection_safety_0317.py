@@ -42,14 +42,27 @@ class SelectionSafety0317Tests(unittest.TestCase):
         self.assertIsNotNone(reason)
         self.assertIn("subtitle mismatch", reason)
 
-    def test_installed_classifier_rejects_lilo_false_positive(self):
-        reason = candidate_safety_reason(
-            "Lilo & Stitch 2: Stitch völlig von der Rolle - Märchen - 2005 - Trailer",
+    def test_lilo_guard_is_applied_by_ranker_not_destructive_repair_classifier(self):
+        # 0.3.17 ambiguity heuristics prevent new downloads but are not grounds
+        # for automatically deleting a historical local trailer.
+        self.assertIsNone(
+            candidate_safety_reason(
+                "Lilo & Stitch 2: Stitch völlig von der Rolle - Märchen - 2005 - Trailer",
+                "Lilo & Stitch 2 - Stitch völlig abgedreht",
+                2005,
+            )
+        )
+        ranked = self._downloader().ranked_candidates(
+            [
+                self._candidate(
+                    "https://example.invalid/lilo-wrong",
+                    "Lilo & Stitch 2: Stitch völlig von der Rolle - Märchen - 2005 - Trailer",
+                )
+            ],
             "Lilo & Stitch 2 - Stitch völlig abgedreht",
             2005,
         )
-        self.assertIsNotNone(reason)
-        self.assertIn("subtitle mismatch", reason)
+        self.assertEqual([], ranked)
 
     def test_exact_sequel_subtitle_stays_allowed(self):
         self.assertIsNone(
@@ -92,7 +105,7 @@ class SelectionSafety0317Tests(unittest.TestCase):
         self.assertIsNotNone(reason)
         self.assertIn("Maid in Manhattan", reason)
 
-    def test_manhattan_contextual_classifier_rejects_real_observed_candidate(self):
+    def test_manhattan_original_title_guard_is_selection_only_and_deterministic(self):
         token = _CONTEXT.set(
             _SafetyContext(
                 preferred_language="german",
@@ -101,15 +114,26 @@ class SelectionSafety0317Tests(unittest.TestCase):
             )
         )
         try:
-            reason = candidate_safety_reason(
-                "Manhattan: Love Story Trailer",
+            self.assertIsNone(
+                candidate_safety_reason(
+                    "Manhattan: Love Story Trailer",
+                    "Manhattan Love Story",
+                    2002,
+                )
+            )
+            ranked = self._downloader().ranked_candidates(
+                [
+                    self._candidate(
+                        "https://example.invalid/manhattan-tv",
+                        "Manhattan: Love Story Trailer",
+                    )
+                ],
                 "Manhattan Love Story",
                 2002,
             )
         finally:
             _CONTEXT.reset(token)
-        self.assertIsNotNone(reason)
-        self.assertIn("ambiguous localized title", reason)
+        self.assertEqual([], ranked)
 
     def test_requested_year_or_preferred_language_disambiguates_localized_title(self):
         self.assertIsNone(

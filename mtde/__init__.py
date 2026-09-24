@@ -1,4 +1,4 @@
-__version__ = "0.3.14"
+__version__ = "0.3.15"
 
 # Install the narrow MTDE safety layer before service.py imports trailer helpers.
 # This keeps the upstream MTDP matcher as the base while filtering only the

@@ -26,6 +26,7 @@ class EmbyClient:
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update({"X-Emby-Token": api_key, "Accept": "application/json"})
+        self._library_ids: dict[str, str] = {}
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}/{path.lstrip('/')}"
@@ -48,21 +49,30 @@ class EmbyClient:
         return list(payload.get("Items", [])) if isinstance(payload, dict) else list(payload)
 
     def resolve_library(self, name: str) -> str:
+        cache_key = name.casefold()
+        cached = self._library_ids.get(cache_key)
+        if cached:
+            return cached
+
         media_error: Exception | None = None
         try:
             for folder in self.media_folders():
-                if str(folder.get("Name", "")).casefold() == name.casefold():
+                if str(folder.get("Name", "")).casefold() == cache_key:
                     item_id = folder.get("Id") or folder.get("ItemId")
                     if item_id:
-                        return str(item_id)
+                        value = str(item_id)
+                        self._library_ids[cache_key] = value
+                        return value
         except requests.RequestException as exc:
             media_error = exc
         try:
             for folder in self.virtual_folders():
-                if str(folder.get("Name", "")).casefold() == name.casefold():
+                if str(folder.get("Name", "")).casefold() == cache_key:
                     item_id = folder.get("ItemId") or folder.get("Id")
                     if item_id:
-                        return str(item_id)
+                        value = str(item_id)
+                        self._library_ids[cache_key] = value
+                        return value
         except requests.RequestException:
             if media_error is not None:
                 raise media_error
@@ -85,9 +95,14 @@ class EmbyClient:
 
     @staticmethod
     def _fields() -> str:
-        # ProductionYear must be requested explicitly so MTDE can use the same
-        # year-aware search/matching behavior as upstream MTDP.
         return "Path,Genres,ProviderIds,LocalTrailerCount,RemoteTrailers,DateCreated,ProductionYear"
+
+    @staticmethod
+    def _detail_fields() -> str:
+        return (
+            "Path,Genres,ProviderIds,LocalTrailerCount,RemoteTrailers,DateCreated,"
+            "ProductionYear,Overview,OfficialRating,CommunityRating,RunTimeTicks,Studios,People"
+        )
 
     def iter_movies(self, library_name: str, page_size: int = 500) -> Iterator[EmbyMovie]:
         parent_id = self.resolve_library(library_name)
@@ -137,15 +152,35 @@ class EmbyClient:
         ]
 
     def get_item(self, item_id: str) -> dict[str, Any]:
+        """Fetch one item without requiring an Emby user id.
+
+        Some Emby installations reject /Items/{id} while the collection-style
+        /Items?Ids=... endpoint works with an API key. Use that first so the
+        MTDE movie detail modal works independently of a configured Emby user.
+        """
         params = {
-            "Fields": (
-                "Path,Genres,ProviderIds,LocalTrailerCount,RemoteTrailers,DateCreated,"
-                "ProductionYear,Overview,OfficialRating,CommunityRating,RunTimeTicks,Studios,People"
-            )
+            "Ids": str(item_id),
+            "Recursive": "true",
+            "Fields": self._detail_fields(),
+            "Limit": 1,
         }
-        r = self.session.get(self._url(f"Items/{item_id}"), params=params, timeout=self.timeout)
+        r = self.session.get(self._url("Items"), params=params, timeout=self.timeout)
         r.raise_for_status()
-        return r.json()
+        items = (r.json().get("Items") or [])
+        if items:
+            return items[0]
+
+        # Compatibility fallback for servers that expose direct item lookup.
+        r = self.session.get(
+            self._url(f"Items/{item_id}"),
+            params={"Fields": self._detail_fields()},
+            timeout=self.timeout,
+        )
+        r.raise_for_status()
+        payload = r.json()
+        if not payload:
+            raise KeyError(f"Emby item not found: {item_id}")
+        return payload
 
     def get_movie(self, item_id: str) -> EmbyMovie:
         item = self.get_item(item_id)

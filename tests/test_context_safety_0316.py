@@ -1,5 +1,6 @@
 import unittest
 
+from mtde import auto_repair
 from mtde.context_safety import (
     _CONTEXT,
     _SafetyContext,
@@ -118,6 +119,31 @@ class ContextSafety0316Tests(unittest.TestCase):
             _CONTEXT.reset(token)
         self.assertIsNotNone(reason)
         self.assertIn("explicit foreign language", reason)
+
+    def test_auto_repair_uses_same_contextual_classifier(self):
+        token = _CONTEXT.set(
+            _SafetyContext(
+                preferred_language="german",
+                library_movies=self.nights_library,
+            )
+        )
+        try:
+            sequel_reason = auto_repair.candidate_safety_reason(
+                "Nachts im Museum - Das geheimnisvolle Grabmal | Offizieller Trailer #1 | Deutsch HD",
+                "Nachts im Museum",
+                2006,
+            )
+            language_reason = auto_repair.candidate_safety_reason(
+                "STOCKMANN Trailer Castellano",
+                "Stockmann",
+                2015,
+            )
+        finally:
+            _CONTEXT.reset(token)
+        self.assertIsNotNone(sequel_reason)
+        self.assertIn("library title collision", sequel_reason)
+        self.assertIsNotNone(language_reason)
+        self.assertIn("explicit foreign language", language_reason)
 
     def test_existing_three_argument_safety_api_remains_compatible(self):
         self.assertIsNone(

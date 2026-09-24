@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.9
+
+Keep the upstream MTDP matcher as the base while blocking a narrow class of non-trailer clips observed in Dry Run.
+
+- Reject standalone `intro`, `opening`, `opening credits` and `vorspann` clips before MTDP title verification/scoring
+- Preserve the upstream MTDP query order, scoring and title verification logic unchanged
+- Add regression coverage for the `Asterix erobert Rom - Intro (1976) (german)` false positive
+- Keep legitimate trailer titles such as `ASTERIX EROBERT ROM - Trailer (1976)` accepted
+
 ## 0.3.8
 
 Fix Emby movie-year retrieval so the upstream MTDP year-aware search and matching logic receives the same metadata it expects.

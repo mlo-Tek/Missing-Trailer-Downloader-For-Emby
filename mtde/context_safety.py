@@ -118,6 +118,7 @@ def install_contextual_safety() -> None:
     does not have: the other movie titles in the current Emby library and the
     configured preferred language.
     """
+    from . import auto_repair as auto_repair_module
     from . import emby as emby_module
     from . import hardening
     from . import service as service_module
@@ -179,7 +180,12 @@ def install_contextual_safety() -> None:
         finally:
             _CONTEXT.reset(token)
 
+    # hardening.ranked_candidates resolves the module attribute at runtime.
+    # auto_repair imported the function directly earlier, so update that bound
+    # reference as well; otherwise historical bad downloads would not benefit
+    # from the new library/language context on the next scan.
     hardening.candidate_safety_reason = contextual_reason
+    auto_repair_module.candidate_safety_reason = contextual_reason
     emby_module.EmbyClient.iter_movies = iter_movies_with_catalog
     service_module.MTDE._process_movie = process_movie_with_context
     service_module._mtde_contextual_safety_installed = True

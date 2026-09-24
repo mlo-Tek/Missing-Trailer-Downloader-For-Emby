@@ -31,10 +31,84 @@ _ALLOWED_TRAILER_CONTEXT = {
     "cinema",
 }
 
+_STANDALONE_NUMBER_RE = re.compile(r"(?<!\w)(\d{1,4})(?!\w)")
+
 
 def _has_trailer_marker(title_lower: str) -> bool:
     """Accept normal and compact forms such as Kinotrailer/GermanTrailer."""
     return "trailer" in title_lower or "teaser" in title_lower
+
+
+def _first_trailer_marker_position(text: str) -> int | None:
+    positions = [pos for pos in (text.find("trailer"), text.find("teaser")) if pos >= 0]
+    return min(positions) if positions else None
+
+
+def _sequel_numbers(text: str) -> list[int]:
+    """Return standalone sequel-like numbers while ignoring calendar years.
+
+    Tokens such as 3D, 4K and 1080p are not standalone numbers and therefore
+    do not match this regex. Four-digit 19xx/20xx values are treated as years,
+    not sequel numbers.
+    """
+    values: list[int] = []
+    for raw in _STANDALONE_NUMBER_RE.findall(text):
+        value = int(raw)
+        if len(raw) == 4 and 1900 <= value <= 2099:
+            continue
+        values.append(value)
+    return values
+
+
+def _numbered_sequel_mismatch(video_title: str, movie_title: str) -> bool:
+    """Reject a different numbered sequel without confusing trailer numbers.
+
+    Examples:
+      * Nachts im Museum -> Nachts im Museum 2 Trailer: reject
+      * Cars -> Cars 2 Trailer: reject
+      * Cars 2 -> Cars 2 Trailer: allow
+      * Ice Age 3 ... -> Ice Age 3 ... Trailer 2: allow
+
+    Only numbers between the matched movie title and the first trailer/teaser
+    marker are considered. A number after the marker describes the trailer
+    itself (for example "Trailer 2") and must never be interpreted as a movie
+    sequel number.
+    """
+    from . import hardening
+
+    movie_norm = hardening._normalized(movie_title)
+    video_norm = hardening._normalized(video_title)
+    if not movie_norm or not video_norm:
+        return False
+
+    movie_match = re.search(r"\b" + re.escape(movie_norm) + r"\b", video_norm)
+    if not movie_match:
+        return False
+
+    marker_pos = _first_trailer_marker_position(video_norm)
+    if marker_pos is not None and marker_pos < movie_match.start():
+        # Titles such as "Official Trailer | Wild Child | Publisher" put the
+        # marker before the movie name. Any preceding number is ambiguous and
+        # is not safe grounds for destructive auto-repair.
+        return False
+
+    segment_end = marker_pos if marker_pos is not None else len(video_norm)
+    if segment_end <= movie_match.end():
+        return False
+
+    # Candidate numbers appearing after the exact movie title but before the
+    # trailer marker indicate another sequel when the Emby title itself did not
+    # contain that number. This is the historical Nachts im Museum -> Teil 2
+    # failure that the generic short-title guard cannot safely catch.
+    suffix_before_marker = video_norm[movie_match.end():segment_end]
+    extra_numbers = _sequel_numbers(suffix_before_marker)
+    if extra_numbers:
+        return True
+
+    # If the exact movie title already contains a sequel number, no mismatch
+    # was introduced between the title and trailer marker. This preserves
+    # Cars 2 and Ice Age 3 while still ignoring "Trailer 2" after the marker.
+    return False
 
 
 def _refined_short_title_mismatch(video_title: str, movie_title: str) -> bool:
@@ -116,6 +190,9 @@ def refined_candidate_safety_reason(video_title: str, movie_title: str, year: in
         years = [int(value) for value in hardening._YEAR_RE.findall(video_title)]
         if years and all(abs(value - int(year)) > 1 for value in years):
             return f"year mismatch: movie {year}, candidate {', '.join(map(str, years))}"
+
+    if _numbered_sequel_mismatch(video_title, movie_title):
+        return "numbered sequel mismatch"
 
     if _refined_short_title_mismatch(video_title, movie_title):
         return "short-title spin-off/subtitle mismatch"

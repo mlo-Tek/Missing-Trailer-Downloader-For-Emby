@@ -25,18 +25,17 @@ NEGATIVE_TITLE_KEYWORDS = [
     "top 10", "every trailer", "all trailers", "trailer compilation",
 ]
 
-# Small MTDE additions based on bad matches observed in Dry Run. These are
-# content types, not title heuristics, so they complement rather than replace
-# the upstream matching logic.
+# Narrow additions based on observed false positives. These only exclude
+# clearly non-trailer content and do not replace upstream MTDP matching.
 ADDITIONAL_NEGATIVE_TITLE_KEYWORDS = [
     "live stream", "24 hours", "24 hours+",
     "full episode", "full episodes",
     "concept trailer", "erklärungsvideo",
     "kinderlied", "kinderlieder",
+    "hauptmenü", "hauptmenu", "dvd menu", "dvd menü",
+    "alle trailer", "trailer sammlung", "trailersammlung",
 ]
 
-# Narrow word-boundary guards for clips that can otherwise score highly because
-# they contain the exact movie title/year but are not trailers.
 ADDITIONAL_NEGATIVE_TITLE_PATTERNS = [
     r"\bintro\b",
     r"\bopening(?:\s+credits?)?\b",
@@ -70,6 +69,9 @@ LANGUAGE_KEYWORDS = {
     "english": ["english", "en"],
 }
 
+_SEQUEL_MARKER_RE = re.compile(r"^(?:part\s+|teil\s+)?(?:2|3|4|5|6|7|8|9|10|ii|iii|iv|v|vi|vii|viii|ix|x)\b")
+_TITLE_ENDS_IN_SEQUEL_RE = re.compile(r"(?:^|\s)(?:2|3|4|5|6|7|8|9|10|ii|iii|iv|v|vi|vii|viii|ix|x)$")
+
 
 def is_likely_trailer(video_title: str) -> bool:
     """Upstream MTDP non-trailer title filter plus narrow MTDE safety additions."""
@@ -77,10 +79,7 @@ def is_likely_trailer(video_title: str) -> bool:
     blocked = NEGATIVE_TITLE_KEYWORDS + ADDITIONAL_NEGATIVE_TITLE_KEYWORDS
     if any(keyword in title_lower for keyword in blocked):
         return False
-    return not any(
-        re.search(pattern, title_lower)
-        for pattern in ADDITIONAL_NEGATIVE_TITLE_PATTERNS
-    )
+    return not any(re.search(pattern, title_lower) for pattern in ADDITIONAL_NEGATIVE_TITLE_PATTERNS)
 
 
 def normalize_title_for_match(text: str) -> str:
@@ -91,6 +90,31 @@ def normalize_title_for_match(text: str) -> str:
     text = re.sub(r"[-–—/_]", " ", text)
     text = re.sub(r"[^\w\s]", "", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _has_sequel_conflict(video_title: str, movie_title: str) -> bool:
+    """Reject obvious later-part matches for a movie without a sequel marker.
+
+    Examples rejected: Ice Age -> Ice Age 4, Kung Fu Panda -> Kung Fu Panda 4,
+    Nachts im Museum -> Nachts im Museum 2. A movie title that already ends in
+    a sequel marker (Cars 2, Kung Fu Panda 3, etc.) is handled by the normal
+    upstream verifier and is not blocked here.
+    """
+    movie_norm = normalize_title_for_match(movie_title)
+    video_norm = normalize_title_for_match(video_title)
+    if not movie_norm or _TITLE_ENDS_IN_SEQUEL_RE.search(movie_norm):
+        return False
+
+    match = re.search(r"\b" + re.escape(movie_norm) + r"\b", video_norm)
+    if not match:
+        return False
+    suffix = video_norm[match.end():].strip()
+    if _SEQUEL_MARKER_RE.match(suffix):
+        return True
+    # Compilation-style result such as "Lilo & Stitch 1&2".
+    if re.match(r"^1\s*(?:and|und)?\s*2\b", suffix):
+        return True
+    return False
 
 
 def is_standalone_title_match(movie_title_lower: str, video_title_lower: str) -> bool:
@@ -109,8 +133,7 @@ def is_standalone_title_match(movie_title_lower: str, video_title_lower: str) ->
             prefix = re.sub(r"[|\-:!]", " ", prefix).strip()
             prefix_words = prefix.split()
             significant = [
-                word
-                for word in prefix_words
+                word for word in prefix_words
                 if word not in TRAILER_NOISE_WORDS and len(word) > 2
             ]
             if significant:
@@ -119,7 +142,14 @@ def is_standalone_title_match(movie_title_lower: str, video_title_lower: str) ->
 
 
 def verify_title_match(video_title: str, movie_title: str, year: int | None) -> bool:
-    """Port of upstream MTDP's eight-level movie-title verification."""
+    """Port of upstream MTDP's eight-level movie-title verification.
+
+    A narrow sequel guard runs before the upstream levels because a standalone
+    base title otherwise also matches a later numbered sequel.
+    """
+    if _has_sequel_conflict(video_title, movie_title):
+        return False
+
     video_title_lower = video_title.lower()
     movie_title_lower = movie_title.lower()
     year_str = str(year) if year is not None else ""
@@ -234,27 +264,19 @@ class TrailerDownloader:
         path = Path(cookies_file)
         try:
             if not path.is_file():
-                self.cookies_file_warning = (
-                    f"COOKIES_FILE ignored: {cookies_file} does not exist or is not a file"
-                )
+                self.cookies_file_warning = f"COOKIES_FILE ignored: {cookies_file} does not exist or is not a file"
                 return None
             with path.open("rb"):
                 pass
         except OSError as exc:
-            self.cookies_file_warning = (
-                f"COOKIES_FILE ignored: {cookies_file} is not readable ({exc})"
-            )
+            self.cookies_file_warning = f"COOKIES_FILE ignored: {cookies_file} is not readable ({exc})"
             return None
         return str(path)
 
     def queries(self, title: str, year: int | None) -> list[str]:
         # Same three queries and order as upstream MTDP.
         year_text = str(year) if year is not None else ""
-        language_suffix = (
-            f" {self.preferred_language}"
-            if self.preferred_language != "original"
-            else ""
-        )
+        language_suffix = f" {self.preferred_language}" if self.preferred_language != "original" else ""
         queries = [
             f"{title} {year_text} official trailer{language_suffix}".strip(),
             f"{title} trailer {year_text}{language_suffix}".strip(),
@@ -302,14 +324,11 @@ class TrailerDownloader:
 
         with yt_dlp.YoutubeDL(opts) as ydl:
             for query_index, query in enumerate(self.queries(title, year)):
-                data = ydl.extract_info(
-                    f"ytsearch{self.search_results}:{query}", download=False
-                ) or {}
+                data = ydl.extract_info(f"ytsearch{self.search_results}:{query}", download=False) or {}
                 for position, entry in enumerate(data.get("entries") or []):
                     if not entry:
                         continue
                     duration = entry.get("duration")
-                    # Upstream rejects unknown duration and >5 minutes.
                     if not duration or int(duration) > self.max_duration:
                         continue
                     video_title = str(entry.get("title") or "")
@@ -332,11 +351,7 @@ class TrailerDownloader:
                             height=int(entry["height"]) if entry.get("height") else None,
                             channel=entry.get("channel") or entry.get("uploader"),
                             thumbnail=entry.get("thumbnail"),
-                            view_count=(
-                                int(entry["view_count"])
-                                if entry.get("view_count") is not None
-                                else None
-                            ),
+                            view_count=int(entry["view_count"]) if entry.get("view_count") is not None else None,
                             search_position=position,
                             query_index=query_index,
                         )
@@ -378,25 +393,45 @@ class TrailerDownloader:
                 score -= 3
 
         if self.preferred_language != "original":
-            lang_keywords = LANGUAGE_KEYWORDS.get(
-                self.preferred_language, [self.preferred_language]
-            )
-            matches_preferred = _matches_language_keyword(
-                title, lang_keywords
-            ) or _matches_language_keyword(channel, lang_keywords)
+            lang_keywords = LANGUAGE_KEYWORDS.get(self.preferred_language, [self.preferred_language])
+            matches_preferred = _matches_language_keyword(title, lang_keywords) or _matches_language_keyword(channel, lang_keywords)
             if matches_preferred:
                 score += 25
             else:
                 other_language_keywords: list[str] = []
                 for language, keywords in LANGUAGE_KEYWORDS.items():
                     if language != self.preferred_language:
-                        other_language_keywords.extend(
-                            keyword for keyword in keywords if len(keyword) >= 4
-                        )
+                        other_language_keywords.extend(keyword for keyword in keywords if len(keyword) >= 4)
                 if _matches_language_keyword(title, other_language_keywords):
                     score -= 15
 
         return score
+
+    def ranked_candidates(
+        self,
+        candidates: list[Candidate],
+        movie_title: str,
+        year: int | None,
+    ) -> list[Candidate]:
+        """Return all verified candidates in the same order MTDP would try them.
+
+        Upstream processes search queries in order and sorts each query's results
+        by score. Returning the full verified list lets MTDE continue with the
+        next valid result when the first YouTube video is unavailable or has no
+        format within the configured quality range.
+        """
+        ranked: list[Candidate] = []
+        seen_urls: set[str] = set()
+        for query_index in sorted({candidate.query_index for candidate in candidates}):
+            group = [candidate for candidate in candidates if candidate.query_index == query_index]
+            group.sort(key=lambda candidate: self._score(candidate, year), reverse=True)
+            for candidate in group:
+                if candidate.url in seen_urls:
+                    continue
+                if verify_title_match(candidate.title, movie_title, year):
+                    seen_urls.add(candidate.url)
+                    ranked.append(candidate)
+        return ranked
 
     def choose(
         self,
@@ -404,22 +439,20 @@ class TrailerDownloader:
         movie_title: str,
         year: int | None,
     ) -> Candidate | None:
-        """Select like upstream: query-by-query, score first, verify title second."""
-        if not candidates:
-            return None
+        ranked = self.ranked_candidates(candidates, movie_title, year)
+        return ranked[0] if ranked else None
 
-        query_indexes = sorted({candidate.query_index for candidate in candidates})
-        for query_index in query_indexes:
-            group = [
-                candidate
-                for candidate in candidates
-                if candidate.query_index == query_index
-            ]
-            group.sort(key=lambda candidate: self._score(candidate, year), reverse=True)
-            for candidate in group:
-                if verify_title_match(candidate.title, movie_title, year):
-                    return candidate
-        return None
+    @staticmethod
+    def _cleanup_partial_outputs(output_stem: Path) -> None:
+        try:
+            for path in output_stem.parent.glob(output_stem.name + ".*"):
+                try:
+                    if path.is_file():
+                        path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        except OSError:
+            pass
 
     def download(
         self,
@@ -447,15 +480,16 @@ class TrailerDownloader:
         }
         import yt_dlp
 
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(candidate.url, download=True)
-            requested = info.get("requested_downloads") or []
-            paths = [
-                Path(item.get("filepath"))
-                for item in requested
-                if item.get("filepath")
-            ]
-            prepared = Path(ydl.prepare_filename(info))
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(candidate.url, download=True)
+                requested = info.get("requested_downloads") or []
+                paths = [Path(item.get("filepath")) for item in requested if item.get("filepath")]
+                prepared = Path(ydl.prepare_filename(info))
+        except Exception:
+            self._cleanup_partial_outputs(output_stem)
+            raise
+
         expected = output_stem.with_suffix("." + self.output_format)
         if expected.exists():
             return expected
@@ -469,9 +503,7 @@ class TrailerDownloader:
         )
         if matches:
             return matches[0]
-        raise FileNotFoundError(
-            f"yt-dlp completed but no output file was found for {output_stem}"
-        )
+        raise FileNotFoundError(f"yt-dlp completed but no output file was found for {output_stem}")
 
 
 def probe_video_height(path: str | Path) -> int | None:
@@ -539,9 +571,7 @@ def find_local_trailers(movie_path: str | Path, trailer_folder: str) -> list[Pat
             continue
         for path in children:
             try:
-                is_video = (
-                    path.is_file() and path.suffix.casefold() in VIDEO_EXTENSIONS
-                )
+                is_video = path.is_file() and path.suffix.casefold() in VIDEO_EXTENSIONS
             except OSError:
                 continue
             if is_video and path not in seen:

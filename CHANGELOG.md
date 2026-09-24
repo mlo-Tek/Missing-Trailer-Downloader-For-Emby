@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.3.17
+
+Tighten the last two ambiguity classes found in the full 1,385-movie Dry Run without broadening destructive repair.
+
+- Reject strongly divergent subtitles only for numbered sequels that have an explicit subtitle in Emby
+- Keep minor subtitle wording differences and original-language subtitle fallbacks possible; the guard requires at least two shared subtitle words plus low overall similarity before rejecting
+- Block the observed `Lilo & Stitch 2 - Stitch völlig abgedreht` -> `Stitch völlig von der Rolle - Märchen` false positive
+- Reject a yearless exact-title candidate when the same YouTube result set also contains that exact normalized title with a conflicting production year
+- Use candidate-set year conflicts as evidence for movie/series, remake or same-name collisions while preserving ordinary yearless trailers when no conflicting-year evidence exists
+- Keep candidates that explicitly state the requested year
+- Add regression tests for Lilo & Stitch 2, Ice Age 3, Spider-Man internal hyphens, Kung Fu Panda yearless trailers and the `Manhattan Love Story` 2002/2014 ambiguity
+- Sync the Python package metadata version with the runtime version
+
+## 0.3.16
+
+Add library-aware and preferred-language-aware matching after the second real-run review.
+
+- Reject a candidate when it clearly contains the full title of another, more specific movie in the same Emby library, such as `Nachts im Museum` -> `Nachts im Museum - Das geheimnisvolle Grabmal`
+- Reject explicitly foreign-language fallbacks such as `Castellano`, `Español`, `Italiano`, `Français`, `Dublado`, Portuguese, Japanese, Korean, Russian and Chinese when German is preferred
+- Keep English available as a neutral fallback when no German trailer is available
+- Apply the same contextual classifier to historical automatic-repair provenance and to new/replacement downloads
+- Keep `Nachts im Museum - Das geheimnisvolle Grabmal` itself valid while blocking it as a candidate for the 2006 base movie
+- Add regression tests for the library-collision and foreign-language guards
+
+## 0.3.15
+
+Close the numbered-sequel repair gap found in the 0.3.14 Dry Run.
+
+- Reject an extra sequel number that appears after the exact movie title but before the first trailer/teaser marker
+- Correctly classify `Nachts im Museum` -> `Nachts im Museum 2 - Trailer 1` and `Cars` -> `Cars 2 Trailer` as unsafe
+- Keep correctly numbered movies such as `Cars 2` and `Ice Age 3` valid
+- Do not confuse trailer numbering such as `Trailer 2` with a movie sequel number
+- Ignore calendar years when identifying sequel numbers
+- Add focused regression coverage for the numbered-sequel cases
+
 ## 0.3.14
 
 Make automatic repair conservative enough for destructive use after reviewing the first full 0.3.13 Dry Run.

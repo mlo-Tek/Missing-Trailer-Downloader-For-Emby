@@ -35,11 +35,42 @@ _FOREIGN_LANGUAGE_MARKERS = (
     "chinese",
 )
 
+_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
+_TRAILER_MARKER_RE = re.compile(r"\b(?:trailer|teaser)\b")
+_SEQUEL_BASE_RE = re.compile(
+    r"(?:^|\s)(?:2|3|4|5|6|7|8|9|10|ii|iii|iv|v|vi|vii|viii|ix|x)$",
+    re.IGNORECASE,
+)
+_SUBTITLE_STOPWORDS = {
+    "a", "an", "the", "of", "and", "or", "in", "on", "to", "for", "is", "are",
+    "der", "die", "das", "den", "dem", "des", "ein", "eine", "einer", "eines",
+    "und", "oder", "von", "im", "in", "auf", "zu", "zum", "zur", "ist", "sind",
+}
+_SUBTITLE_NOISE = {
+    "official", "offiziell", "offizieller", "offizielle", "offizielles",
+    "deutsch", "deutscher", "german", "english", "englisch",
+    "hd", "uhd", "4k", "full", "final", "finaler", "first", "erster", "erste",
+    "exclusive", "exklusiv", "extended", "new", "neu", "neue", "neuer", "neues",
+    "trailer", "teaser", "movie", "film", "kino", "kinotrailer", "tv", "spot",
+}
+
 
 def _normalized(text: str) -> str:
     from .trailer import normalize_title_for_match
 
     return normalize_title_for_match(text)
+
+
+def _meaningful_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in _normalized(text).split()
+        if token
+        and token not in _SUBTITLE_STOPWORDS
+        and token not in _SUBTITLE_NOISE
+        and not token.isdigit()
+        and not (len(token) == 4 and token.isdigit())
+    }
 
 
 def explicit_foreign_language_reason(
@@ -110,18 +141,114 @@ def library_title_collision_reason(
     return None
 
 
+def subtitle_divergence_reason(video_title: str, movie_title: str) -> str | None:
+    """Reject a conflicting sequel subtitle only when the divergence is strong.
+
+    This guard is deliberately limited to numbered sequels that have an
+    explicit subtitle in Emby. It does not require an exact subtitle match:
+    minor wording differences and English/original-title fallbacks remain
+    possible. A rejection needs at least two shared subtitle words plus a low
+    overall token similarity, which catches the observed
+    "Lilo & Stitch 2 - Stitch völlig abgedreht" ->
+    "Stitch völlig von der Rolle - Märchen" false positive without turning
+    normal punctuation or release descriptors into destructive mismatches.
+    """
+    parts = re.split(r"\s*[-–—:]\s*", movie_title, maxsplit=1)
+    if len(parts) != 2:
+        return None
+    base_title, expected_subtitle = (part.strip() for part in parts)
+    if not base_title or not expected_subtitle:
+        return None
+
+    base_norm = _normalized(base_title)
+    if not base_norm or not _SEQUEL_BASE_RE.search(base_norm):
+        return None
+
+    candidate_norm = _normalized(video_title)
+    base_match = re.search(r"\b" + re.escape(base_norm) + r"\b", candidate_norm)
+    if not base_match:
+        return None
+
+    marker = _TRAILER_MARKER_RE.search(candidate_norm, base_match.end())
+    end = marker.start() if marker else len(candidate_norm)
+    candidate_subtitle = candidate_norm[base_match.end():end].strip()
+    candidate_subtitle = _YEAR_RE.sub(" ", candidate_subtitle)
+
+    expected_tokens = _meaningful_tokens(expected_subtitle)
+    candidate_tokens = _meaningful_tokens(candidate_subtitle)
+    if len(expected_tokens) < 2 or len(candidate_tokens) < 2:
+        return None
+
+    shared = expected_tokens & candidate_tokens
+    if len(shared) < 2:
+        # A completely different-language/original subtitle can still be the
+        # same movie, so do not reject it solely on subtitle wording.
+        return None
+
+    union = expected_tokens | candidate_tokens
+    similarity = len(shared) / len(union) if union else 1.0
+    if expected_tokens.issubset(candidate_tokens) or similarity >= 0.5:
+        return None
+
+    return f"subtitle mismatch: expected '{expected_subtitle}', candidate '{candidate_subtitle}'"
+
+
+def ambiguous_no_year_reason(
+    video_title: str,
+    movie_title: str,
+    year: int | None,
+    candidate_titles: Iterable[str],
+) -> str | None:
+    """Reject a yearless exact-title candidate when search results prove ambiguity.
+
+    MTDP intentionally allows yearless trailer titles. Keep that behavior unless
+    the same YouTube search also exposes the exact same normalized movie title
+    with a conflicting production year. That is strong evidence of a remake,
+    TV-series/movie name collision or another same-name work. Candidates that
+    state the requested year remain allowed.
+    """
+    if year is None or _YEAR_RE.search(video_title):
+        return None
+
+    movie_norm = _normalized(movie_title)
+    candidate_norm = _normalized(video_title)
+    if not movie_norm or not re.search(r"\b" + re.escape(movie_norm) + r"\b", candidate_norm):
+        return None
+
+    conflicts: set[int] = set()
+    exact_pattern = re.compile(r"\b" + re.escape(movie_norm) + r"\b")
+    for other_title in candidate_titles:
+        if other_title == video_title:
+            continue
+        other_norm = _normalized(other_title)
+        if not exact_pattern.search(other_norm):
+            continue
+        if not _TRAILER_MARKER_RE.search(other_norm):
+            continue
+        for raw in _YEAR_RE.findall(other_title):
+            other_year = int(raw)
+            if abs(other_year - int(year)) > 1:
+                conflicts.add(other_year)
+
+    if not conflicts:
+        return None
+    years = ", ".join(str(value) for value in sorted(conflicts))
+    return f"ambiguous yearless title: conflicting candidate year(s) {years}"
+
+
 def install_contextual_safety() -> None:
-    """Add library-aware and preferred-language-aware safety to MTDE scans.
+    """Add library/language and candidate-set-aware safety to MTDE scans.
 
     The existing MTDP-style matcher and all earlier MTDE safety rules remain the
     base. This layer only supplies context that the candidate matcher otherwise
-    does not have: the other movie titles in the current Emby library and the
-    configured preferred language.
+    does not have and rejects two high-confidence ambiguity classes observed in
+    real dry runs.
     """
     from . import auto_repair as auto_repair_module
     from . import emby as emby_module
     from . import hardening
     from . import service as service_module
+    from . import trailer as trailer_module
 
     if getattr(service_module, "_mtde_contextual_safety_installed", False):
         return
@@ -129,9 +256,14 @@ def install_contextual_safety() -> None:
     original_reason = hardening.candidate_safety_reason
     original_iter_movies = emby_module.EmbyClient.iter_movies
     original_process_movie = service_module.MTDE._process_movie
+    original_ranked_candidates = trailer_module.TrailerDownloader.ranked_candidates
 
     def contextual_reason(video_title: str, movie_title: str, year: int | None) -> str | None:
         reason = original_reason(video_title, movie_title, year)
+        if reason:
+            return reason
+
+        reason = subtitle_divergence_reason(video_title, movie_title)
         if reason:
             return reason
 
@@ -154,6 +286,15 @@ def install_contextual_safety() -> None:
             context.library_movies,
         )
 
+    def ranked_candidates_with_ambiguity(self, candidates, movie_title, year):
+        ranked = original_ranked_candidates(self, candidates, movie_title, year)
+        titles = tuple(candidate.title for candidate in candidates)
+        return [
+            candidate
+            for candidate in ranked
+            if ambiguous_no_year_reason(candidate.title, movie_title, year, titles) is None
+        ]
+
     def iter_movies_with_catalog(self, library_name):
         # Materialize the existing Emby result once, then reuse that same list
         # for the caller while retaining only title/year metadata for matching.
@@ -175,7 +316,7 @@ def install_contextual_safety() -> None:
         try:
             # At install time this is the auto-repair wrapper. Keeping the
             # context active around it means both historical repair checks and
-            # the replacement search use exactly the same new safety rules.
+            # the replacement search use exactly the same contextual rules.
             return original_process_movie(self, library, movie, do_download, progress=progress)
         finally:
             _CONTEXT.reset(token)
@@ -183,9 +324,10 @@ def install_contextual_safety() -> None:
     # hardening.ranked_candidates resolves the module attribute at runtime.
     # auto_repair imported the function directly earlier, so update that bound
     # reference as well; otherwise historical bad downloads would not benefit
-    # from the new library/language context on the next scan.
+    # from the new library/language/subtitle context on the next scan.
     hardening.candidate_safety_reason = contextual_reason
     auto_repair_module.candidate_safety_reason = contextual_reason
+    trailer_module.TrailerDownloader.ranked_candidates = ranked_candidates_with_ambiguity
     emby_module.EmbyClient.iter_movies = iter_movies_with_catalog
     service_module.MTDE._process_movie = process_movie_with_context
     service_module._mtde_contextual_safety_installed = True

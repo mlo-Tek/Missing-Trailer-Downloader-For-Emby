@@ -7,6 +7,7 @@ import sys
 
 from .app import create_app
 from .config import Settings
+from .hardening import install_repair_routes
 from .service import MTDE
 
 
@@ -35,6 +36,7 @@ def main() -> int:
         return 0
 
     app = create_app(service)
+    install_repair_routes(app, service)
     app.run(host="0.0.0.0", port=settings.web_port, threaded=True)
     return 0
 

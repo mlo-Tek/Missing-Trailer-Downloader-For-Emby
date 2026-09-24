@@ -1,4 +1,4 @@
-__version__ = "0.3.13"
+__version__ = "0.3.14"
 
 # Install the narrow MTDE safety layer before service.py imports trailer helpers.
 # This keeps the upstream MTDP matcher as the base while filtering only the
@@ -6,6 +6,15 @@ __version__ = "0.3.13"
 from .hardening import install_trailer_hardening
 
 install_trailer_hardening()
+
+# Automatic repair is destructive. Refine the supplemental safety classifier
+# conservatively before auto_repair imports it so legitimate historical MTDE
+# trailers are not deleted merely because their YouTube title contains release
+# descriptors such as Exklusiv, Neuer, Extended, 3D, Restaurierung/Blu-ray,
+# Kinotrailer or GermanTrailer.
+from .safety_refinement import install_safety_refinement
+
+install_safety_refinement()
 
 # A normal scan may automatically repair a local trailer only when MTDE can
 # prove from its own persistent logs that it downloaded that exact file and the

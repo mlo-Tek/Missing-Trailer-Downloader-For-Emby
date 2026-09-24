@@ -35,6 +35,14 @@ ADDITIONAL_NEGATIVE_TITLE_KEYWORDS = [
     "kinderlied", "kinderlieder",
 ]
 
+# Narrow word-boundary guards for clips that can otherwise score highly because
+# they contain the exact movie title/year but are not trailers.
+ADDITIONAL_NEGATIVE_TITLE_PATTERNS = [
+    r"\bintro\b",
+    r"\bopening(?:\s+credits?)?\b",
+    r"\bvorspann\b",
+]
+
 PREFERRED_CHANNEL_KEYWORDS = [
     "official", "vevo", "pictures", "studios", "entertainment",
     "warner", "universal", "sony", "disney", "paramount", "lionsgate",
@@ -67,7 +75,12 @@ def is_likely_trailer(video_title: str) -> bool:
     """Upstream MTDP non-trailer title filter plus narrow MTDE safety additions."""
     title_lower = video_title.lower()
     blocked = NEGATIVE_TITLE_KEYWORDS + ADDITIONAL_NEGATIVE_TITLE_KEYWORDS
-    return not any(keyword in title_lower for keyword in blocked)
+    if any(keyword in title_lower for keyword in blocked):
+        return False
+    return not any(
+        re.search(pattern, title_lower)
+        for pattern in ADDITIONAL_NEGATIVE_TITLE_PATTERNS
+    )
 
 
 def normalize_title_for_match(text: str) -> str:

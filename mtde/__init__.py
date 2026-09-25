@@ -1,72 +1,45 @@
-__version__ = "0.3.22"
+__version__ = "0.4.0"
 
-# Install the narrow MTDE safety layer before service.py imports trailer helpers.
-# This keeps the upstream MTDP matcher as the base while filtering only the
-# false-positive classes observed in real MTDE runs.
+# Install the narrow movie safety layer before service.py imports trailer helpers.
+# Movie matching remains based on upstream MTDP Movies.py, with only the proven
+# false-positive guards requested during the Emby port.
 from .hardening import install_trailer_hardening
 
 install_trailer_hardening()
 
-# Automatic repair is destructive. Refine the supplemental safety classifier
-# conservatively before auto_repair imports it so legitimate historical MTDE
-# trailers are not deleted merely because their YouTube title contains release
-# descriptors such as Exklusiv, Neuer, Extended, 3D, Restaurierung/Blu-ray,
-# Kinotrailer or GermanTrailer.
 from .safety_refinement import install_safety_refinement
 
 install_safety_refinement()
 
-# A normal scan may automatically repair a local trailer only when MTDE can
-# prove from its own persistent logs that it downloaded that exact file and the
-# recorded source candidate is unsafe under the current safety rules. Untracked
-# local/manual trailers are never deleted automatically.
 from .auto_repair import install_auto_repair
 
 install_auto_repair()
 
-# Add the contextual guards after auto-repair is installed so historical repair,
-# replacement searches, subtitle validation and candidate-set ambiguity checks
-# all share the same safety stack.
 from .context_safety import install_contextual_safety
 
 install_contextual_safety()
 
-# 0.3.18 narrows only the candidate-set year ambiguity heuristic. In 0.3.17 a
-# later sequel such as Kung Fu Panda 4 could make the original Kung Fu Panda
-# trailer look ambiguous solely because both titles share the same base words.
-# Keep this final layer selection-only; it never becomes an auto-delete rule.
 from .ambiguity_refinement import install_ambiguity_refinement
 
 install_ambiguity_refinement()
 
-# 0.3.19 fixes the upgrade staging path interaction with 0.3.12 hardening.
-# Complete `.mtde-upgrade-*` staging files are allowed only during the upgrade
-# download call; real yt-dlp fragments remain rejected and staging leftovers
-# remain invisible to local-trailer discovery.
 from .upgrade_temp_fix import install_upgrade_temp_fix
 
 install_upgrade_temp_fix()
 
-# 0.3.20 closes the last two false-positive classes observed in the final real
-# run: explicit video-game/platform trailers and candidates naming another
-# library movie by that movie's Emby OriginalTitle. Both are high-confidence
-# rules and therefore also participate in proven-log automatic repair.
 from .final_safety import install_final_safety
 
 install_final_safety()
 
-# 0.3.21 makes the Web UI cache stale-while-revalidate instead of rebuilding
-# the whole Emby library every 30 seconds, persists ffprobe/UI metadata between
-# container restarts and restores Emby TV-library visibility/statistics.
+# Web performance/cache adaptation for Emby. This does not define the scanner;
+# Movies + TV processing now live in the core service again, matching upstream's
+# separate Movies.py / TV.py design.
 from .ui_tv_perf import install_ui_tv_performance
 from .ui_tv_perf_refinement import install_ui_tv_performance_refinement
 
 install_ui_tv_performance()
 install_ui_tv_performance_refinement()
 
-# 0.3.22 keeps the dashboard resolution card readable. Exact ffprobe heights
-# remain cached per item, but the aggregate chart only exposes the six standard
-# tiers users actually need to see.
 from .dashboard_resolution_filter import install_dashboard_resolution_filter
 
 install_dashboard_resolution_filter()

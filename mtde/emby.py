@@ -20,6 +20,12 @@ class EmbyMovie:
     original_title: str = ""
 
 
+# The same metadata shape is sufficient for Series. Keeping one lightweight
+# dataclass avoids duplicating all media-server plumbing while the caller still
+# selects Movie vs Series explicitly through iter_movies()/iter_series().
+EmbySeries = EmbyMovie
+
+
 class EmbyClient:
     def __init__(self, base_url: str, api_key: str, timeout: int = 120):
         root = base_url.rstrip("/")
@@ -106,14 +112,19 @@ class EmbyClient:
             "ProductionYear,OriginalTitle,Overview,OfficialRating,CommunityRating,RunTimeTicks,Studios,People"
         )
 
-    def iter_movies(self, library_name: str, page_size: int = 500) -> Iterator[EmbyMovie]:
+    def _iter_library_items(
+        self,
+        library_name: str,
+        include_type: str,
+        page_size: int = 500,
+    ) -> Iterator[EmbyMovie]:
         parent_id = self.resolve_library(library_name)
         start = 0
         while True:
             params = {
                 "ParentId": parent_id,
                 "Recursive": "true",
-                "IncludeItemTypes": "Movie",
+                "IncludeItemTypes": include_type,
                 "Fields": self._fields(),
                 "StartIndex": start,
                 "Limit": page_size,
@@ -125,20 +136,27 @@ class EmbyClient:
             payload = r.json()
             items = payload.get("Items", [])
             for item in items:
-                movie = self._movie_from_item(item)
-                if movie.path:
-                    yield movie
+                media = self._movie_from_item(item)
+                if media.path:
+                    yield media
             start += len(items)
             total = int(payload.get("TotalRecordCount") or len(items))
             if not items or start >= total:
                 break
 
-    def recent_movies(self, library_name: str, limit: int = 50) -> list[EmbyMovie]:
+    def iter_movies(self, library_name: str, page_size: int = 500) -> Iterator[EmbyMovie]:
+        yield from self._iter_library_items(library_name, "Movie", page_size)
+
+    def iter_series(self, library_name: str, page_size: int = 500) -> Iterator[EmbySeries]:
+        # Direct Emby equivalent of upstream Plex tv_section.all().
+        yield from self._iter_library_items(library_name, "Series", page_size)
+
+    def _recent_items(self, library_name: str, include_type: str, limit: int = 50) -> list[EmbyMovie]:
         parent_id = self.resolve_library(library_name)
         params = {
             "ParentId": parent_id,
             "Recursive": "true",
-            "IncludeItemTypes": "Movie",
+            "IncludeItemTypes": include_type,
             "Fields": self._fields(),
             "StartIndex": 0,
             "Limit": limit,
@@ -148,18 +166,19 @@ class EmbyClient:
         r = self.session.get(self._url("Items"), params=params, timeout=self.timeout)
         r.raise_for_status()
         return [
-            movie
+            media
             for item in (r.json().get("Items") or [])
-            if (movie := self._movie_from_item(item)).path
+            if (media := self._movie_from_item(item)).path
         ]
 
-    def get_item(self, item_id: str) -> dict[str, Any]:
-        """Fetch one item without requiring an Emby user id.
+    def recent_movies(self, library_name: str, limit: int = 50) -> list[EmbyMovie]:
+        return self._recent_items(library_name, "Movie", limit)
 
-        Some Emby installations reject /Items/{id} while the collection-style
-        /Items?Ids=... endpoint works with an API key. Use that first so the
-        MTDE movie detail modal works independently of a configured Emby user.
-        """
+    def recent_series(self, library_name: str, limit: int = 50) -> list[EmbySeries]:
+        return self._recent_items(library_name, "Series", limit)
+
+    def get_item(self, item_id: str) -> dict[str, Any]:
+        """Fetch one item without requiring an Emby user id."""
         params = {
             "Ids": str(item_id),
             "Recursive": "true",
@@ -172,7 +191,6 @@ class EmbyClient:
         if items:
             return items[0]
 
-        # Compatibility fallback for servers that expose direct item lookup.
         r = self.session.get(
             self._url(f"Items/{item_id}"),
             params={"Fields": self._detail_fields()},
@@ -184,12 +202,24 @@ class EmbyClient:
             raise KeyError(f"Emby item not found: {item_id}")
         return payload
 
+    def get_media(self, item_id: str) -> tuple[str, EmbyMovie]:
+        raw = self.get_item(item_id)
+        media = self._movie_from_item(raw)
+        if not media.path:
+            raise KeyError(f"Emby item has no path: {item_id}")
+        return str(raw.get("Type") or ""), media
+
     def get_movie(self, item_id: str) -> EmbyMovie:
-        item = self.get_item(item_id)
-        movie = self._movie_from_item(item)
-        if not movie.path:
-            raise KeyError(f"Emby movie has no path: {item_id}")
-        return movie
+        item_type, media = self.get_media(item_id)
+        if item_type and item_type.casefold() != "movie":
+            raise KeyError(f"Emby item is not a movie: {item_id}")
+        return media
+
+    def get_series(self, item_id: str) -> EmbySeries:
+        item_type, media = self.get_media(item_id)
+        if item_type and item_type.casefold() != "series":
+            raise KeyError(f"Emby item is not a series: {item_id}")
+        return media
 
     def search_items(
         self,

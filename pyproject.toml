@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mtde"
-version = "0.3.18"
+version = "0.3.19"
 description = "Missing Trailer Downloader for Emby"
 requires-python = ">=3.11"
 dependencies = [

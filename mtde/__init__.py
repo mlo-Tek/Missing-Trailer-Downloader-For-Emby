@@ -1,4 +1,4 @@
-__version__ = "0.3.20"
+__version__ = "0.3.21"
 
 # Install the narrow MTDE safety layer before service.py imports trailer helpers.
 # This keeps the upstream MTDP matcher as the base while filtering only the
@@ -54,3 +54,12 @@ install_upgrade_temp_fix()
 from .final_safety import install_final_safety
 
 install_final_safety()
+
+# 0.3.21 makes the Web UI cache stale-while-revalidate instead of rebuilding
+# the whole Emby library every 30 seconds, persists ffprobe/UI metadata between
+# container restarts and restores Emby TV-library visibility/statistics.
+from .ui_tv_perf import install_ui_tv_performance
+from .ui_tv_perf_refinement import install_ui_tv_performance_refinement
+
+install_ui_tv_performance()
+install_ui_tv_performance_refinement()

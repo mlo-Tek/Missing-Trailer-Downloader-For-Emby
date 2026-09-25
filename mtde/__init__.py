@@ -1,4 +1,4 @@
-__version__ = "0.3.21"
+__version__ = "0.3.22"
 
 # Install the narrow MTDE safety layer before service.py imports trailer helpers.
 # This keeps the upstream MTDP matcher as the base while filtering only the
@@ -63,3 +63,10 @@ from .ui_tv_perf_refinement import install_ui_tv_performance_refinement
 
 install_ui_tv_performance()
 install_ui_tv_performance_refinement()
+
+# 0.3.22 keeps the dashboard resolution card readable. Exact ffprobe heights
+# remain cached per item, but the aggregate chart only exposes the six standard
+# tiers users actually need to see.
+from .dashboard_resolution_filter import install_dashboard_resolution_filter
+
+install_dashboard_resolution_filter()

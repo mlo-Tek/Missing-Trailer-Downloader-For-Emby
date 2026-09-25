@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.3.20
+
+Close the final two false-positive classes found in the 0.3.19 full real run.
+
+- Reject explicit video-game/platform trailer candidates such as `PS3`, `PS4`, `PS5`, PlayStation, Xbox, Nintendo, gameplay, `video game`, `PC game` and `game trailer`
+- Remove the movie title before checking game markers so legitimate film titles containing a word such as `Game` are not rejected
+- Enrich the per-library safety catalog with Emby `OriginalTitle` without adding another Emby request
+- Reject a candidate that exactly names another movie in the same Emby library by that other movie's substantial `OriginalTitle`
+- Keep the current movie's own `OriginalTitle` valid as an English/original-language fallback
+- Block the observed `Toy Story 3` -> `Toy Story 3 PS3 ZURG-Trailer German` false positive
+- Block the observed `Meine Braut, ihr Vater und ich` -> `Meet the Fockers` false positive while keeping `Meet the Parents` valid for the 2000 film
+- Apply both rules to proven-log automatic repair so the two files downloaded by 0.3.19 are automatically removed/reprocessed on the next scan
+- Keep legacy two-field library safety catalogs compatible
+
+## 0.3.19
+
+Fix the low-resolution upgrade staging-file interaction found in the first full 0.3.18 real run.
+
+- Allow a complete `.mtde-upgrade-*` staging file only while the upgrade download path is active
+- Keep real yt-dlp fragments such as `*.f616.mp4`, `.part` and `.ytdl` rejected
+- Keep leftover `.mtde-upgrade-*` staging files excluded from local-trailer detection
+- Preserve the existing rule that the old trailer is deleted only after a verified replacement meets the configured minimum resolution and is better than the old file
+- Add regression coverage for successful upgrade staging and fragment rejection
+
+## 0.3.18
+
+Narrow the candidate-set year ambiguity heuristic after the 0.3.17 full-library Dry Run.
+
+- Stop treating later sequels and spin-offs as conflicting-year evidence for a base movie merely because they share the same leading title words
+- Keep yearless `Kung Fu Panda` trailers valid even when search results also contain `Kung Fu Panda 4` or `The Dragon Knight`
+- Preserve the same-title 2002/2014 ambiguity protection for `Manhattan Love Story`
+- Preserve the divergent-subtitle protection for `Lilo & Stitch 2`
+- Add regression tests for sequel/spin-off exclusions and true same-title conflicts
+
 ## 0.3.17
 
 Tighten the last two ambiguity classes found in the full 1,385-movie Dry Run without broadening destructive repair.
@@ -187,7 +221,7 @@ Make Dry Run and real scans directly controllable from the Web UI.
 - Persist the selected run mode by writing `DRY_RUN` back to `config.yml`
 - Log explicit UI requests such as `DRY-RUN SCAN REQUESTED FROM WEB UI` and `REAL RUN REQUESTED FROM WEB UI`
 - Add scan status fields for running/stopping, current mode, start time and last run
-- Add cooperative stop handling between movies; an active yt-dlp download may finish before the stop takes effect
+- Add cooperative stop handling between movies; an active yt-dlp download may finish before the stop flag is honored
 - Keep scheduler start/stop separate from scan stop to avoid UI confusion
 
 ## 0.3.0

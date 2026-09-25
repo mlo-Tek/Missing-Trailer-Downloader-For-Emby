@@ -1,4 +1,4 @@
-__version__ = "0.3.18"
+__version__ = "0.3.19"
 
 # Install the narrow MTDE safety layer before service.py imports trailer helpers.
 # This keeps the upstream MTDP matcher as the base while filtering only the
@@ -38,3 +38,11 @@ install_contextual_safety()
 from .ambiguity_refinement import install_ambiguity_refinement
 
 install_ambiguity_refinement()
+
+# 0.3.19 fixes the upgrade staging path interaction with 0.3.12 hardening.
+# Complete `.mtde-upgrade-*` staging files are allowed only during the upgrade
+# download call; real yt-dlp fragments remain rejected and staging leftovers
+# remain invisible to local-trailer discovery.
+from .upgrade_temp_fix import install_upgrade_temp_fix
+
+install_upgrade_temp_fix()

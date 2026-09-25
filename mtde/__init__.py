@@ -1,4 +1,4 @@
-__version__ = "0.3.19"
+__version__ = "0.3.20"
 
 # Install the narrow MTDE safety layer before service.py imports trailer helpers.
 # This keeps the upstream MTDP matcher as the base while filtering only the
@@ -46,3 +46,11 @@ install_ambiguity_refinement()
 from .upgrade_temp_fix import install_upgrade_temp_fix
 
 install_upgrade_temp_fix()
+
+# 0.3.20 closes the last two false-positive classes observed in the final real
+# run: explicit video-game/platform trailers and candidates naming another
+# library movie by that movie's Emby OriginalTitle. Both are high-confidence
+# rules and therefore also participate in proven-log automatic repair.
+from .final_safety import install_final_safety
+
+install_final_safety()

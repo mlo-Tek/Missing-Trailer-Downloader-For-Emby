@@ -4,13 +4,21 @@ EMBY_URL: "http://emby:8096"
 EMBY_API_KEY: "CHANGE_ME"
 EMBY_TIMEOUT: 120
 
-# Libraries are configured like upstream MTDP, with per-library genre exclusions.
+# Libraries follow the upstream MTDP layout: Movies and TV Shows are configured
+# independently and a normal run processes all configured Movie libraries first,
+# then all configured TV libraries.
 MOVIE_LIBRARIES:
   - name: "Movies"
     genres_to_skip:
       - "Short"
       - "Concert"
   # - name: "Kids Movies"
+  #   genres_to_skip: []
+
+TV_LIBRARIES:
+  - name: "TV Shows"
+    genres_to_skip: []
+  # - name: "Kids TV"
   #   genres_to_skip: []
 
 # Global safety switch. Keep this true for the first scan.
@@ -45,7 +53,7 @@ COOKIES_FILE: ""
 
 # off   = keep all existing local trailers
 # local = replace a detected local trailer when its measured resolution is below
-#         TRAILER_RESOLUTION_MIN. The old file is removed only after the better
+#         TRAILER_RESOLUTION_MIN. The old file is removed only after a better
 #         trailer has downloaded successfully.
 UPGRADE_TRAILERS: "off"
 
@@ -58,8 +66,7 @@ SCHEDULE_TYPE: "disabled"
 SCHEDULE_HOURS: 24
 SCHEDULE_CRON: "0 */6 * * *"
 
-# Emby-native new-item detection uses lightweight polling. The first poll only
-# establishes a baseline; later newly added movies trigger a scan after the delay.
+# Emby-native new-item detection uses lightweight polling.
 NEW_ITEM_DETECTION: false
 NEW_ITEM_DELAY: 60
 

@@ -42,11 +42,30 @@ class PathMapping:
         return path
 
 
+def _parse_libraries(raw_entries, legacy_genres: list[str]) -> tuple[list[str], dict[str, list[str]]]:
+    names: list[str] = []
+    per_library: dict[str, list[str]] = {}
+    for entry in raw_entries or []:
+        if isinstance(entry, dict):
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            names.append(name)
+            per_library[name] = [str(x) for x in (entry.get("genres_to_skip") or [])]
+        else:
+            name = str(entry).strip()
+            if name:
+                names.append(name)
+                per_library[name] = list(legacy_genres)
+    return names, per_library
+
+
 @dataclass
 class Settings:
     emby_url: str
     emby_api_key: str
     movie_libraries: list[str]
+    tv_libraries: list[str] = field(default_factory=list)
 
     dry_run: bool = True
     emby_timeout: int = 120
@@ -75,9 +94,10 @@ class Settings:
     web_port: int = 2121
     path_mappings: list[PathMapping] = field(default_factory=list)
 
-    # Compatibility with the early MTDE config format.
+    # Compatibility with early MTDE/MTDP config formats.
     skip_genres: list[str] = field(default_factory=list)
     movie_genres_to_skip: dict[str, list[str]] = field(default_factory=dict)
+    tv_genres_to_skip: dict[str, list[str]] = field(default_factory=dict)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "Settings":
@@ -90,21 +110,24 @@ class Settings:
         ]
 
         legacy_genres = [str(x) for x in raw.get("SKIP_GENRES", [])]
-        raw_libs = raw.get("MOVIE_LIBRARIES", []) or []
-        movie_libraries: list[str] = []
-        per_library: dict[str, list[str]] = {}
-        for entry in raw_libs:
-            if isinstance(entry, dict):
-                name = str(entry.get("name") or "").strip()
-                if not name:
-                    continue
-                movie_libraries.append(name)
-                per_library[name] = [str(x) for x in (entry.get("genres_to_skip") or [])]
-            else:
-                name = str(entry).strip()
-                if name:
-                    movie_libraries.append(name)
-                    per_library[name] = list(legacy_genres)
+        movie_legacy_genres = [str(x) for x in raw.get("MOVIE_GENRES_TO_SKIP", legacy_genres)]
+        tv_legacy_genres = [str(x) for x in raw.get("TV_GENRES_TO_SKIP", [])]
+
+        raw_movie_libs = raw.get("MOVIE_LIBRARIES", []) or []
+        if not raw_movie_libs and raw.get("MOVIE_LIBRARY_NAME"):
+            raw_movie_libs = [{
+                "name": raw.get("MOVIE_LIBRARY_NAME"),
+                "genres_to_skip": movie_legacy_genres,
+            }]
+        movie_libraries, movie_per_library = _parse_libraries(raw_movie_libs, movie_legacy_genres)
+
+        raw_tv_libs = raw.get("TV_LIBRARIES", []) or []
+        if not raw_tv_libs and raw.get("TV_LIBRARY_NAME"):
+            raw_tv_libs = [{
+                "name": raw.get("TV_LIBRARY_NAME"),
+                "genres_to_skip": tv_legacy_genres,
+            }]
+        tv_libraries, tv_per_library = _parse_libraries(raw_tv_libs, tv_legacy_genres)
 
         language_raw = str(raw.get("PREFERRED_LANGUAGE", "original")).strip().casefold()
         preferred_language = _LANGUAGE_ALIASES.get(language_raw, language_raw or "original")
@@ -113,6 +136,7 @@ class Settings:
             emby_url=str(raw.get("EMBY_URL", "")).rstrip("/"),
             emby_api_key=str(raw.get("EMBY_API_KEY", "")),
             movie_libraries=movie_libraries,
+            tv_libraries=tv_libraries,
             dry_run=bool(raw.get("DRY_RUN", True)),
             emby_timeout=int(raw.get("EMBY_TIMEOUT", 120)),
             check_remote_trailers=bool(raw.get("CHECK_REMOTE_TRAILERS", False)),
@@ -137,7 +161,8 @@ class Settings:
             web_port=int(raw.get("WEB_PORT", 2121)),
             path_mappings=mappings,
             skip_genres=legacy_genres,
-            movie_genres_to_skip=per_library,
+            movie_genres_to_skip=movie_per_library,
+            tv_genres_to_skip=tv_per_library,
         )
         settings.validate()
         return settings
@@ -147,8 +172,8 @@ class Settings:
             raise ValueError("EMBY_URL is required")
         if not self.emby_api_key:
             raise ValueError("EMBY_API_KEY is required")
-        if not self.movie_libraries:
-            raise ValueError("At least one MOVIE_LIBRARIES entry is required")
+        if not self.movie_libraries and not self.tv_libraries:
+            raise ValueError("At least one MOVIE_LIBRARIES or TV_LIBRARIES entry is required")
         if self.emby_timeout < 5:
             raise ValueError("EMBY_TIMEOUT must be at least 5 seconds")
         if self.trailer_file_format not in {"mkv", "mp4"}:
@@ -179,6 +204,9 @@ class Settings:
 
     def genres_for_library(self, name: str) -> list[str]:
         return list(self.movie_genres_to_skip.get(name, self.skip_genres))
+
+    def genres_for_tv_library(self, name: str) -> list[str]:
+        return list(self.tv_genres_to_skip.get(name, []))
 
     def map_path(self, path: str) -> str:
         for mapping in self.path_mappings:
